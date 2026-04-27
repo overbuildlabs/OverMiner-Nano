@@ -60,7 +60,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.1.1"
+#define FW_VERSION         "0.1.2"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"
@@ -1921,32 +1921,35 @@ void setup() {
     // WiFi (blocks on first boot until user finishes captive portal)
     wifiSetupBlocking();
 
-    // mDNS - unique hostname per device so multiple PoPMiner Nanos can
-    // coexist on one LAN. Also publishes a custom _popminer._tcp service so
-    // PoPManager (or any mDNS scanner) can discover all devices in one query.
+    // Compute unique mDNS hostname so multiple PoPMiner Nanos coexist on one
+    // LAN: popminer-XXXX where XXXX is the low 16 bits of the chip MAC.
     {
         uint64_t mac = ESP.getEfuseMac();
         snprintf(mdnsHostname, sizeof(mdnsHostname), "popminer-%04x",
                  (uint16_t)(mac & 0xFFFF));
     }
-    if (MDNS.begin(mdnsHostname)) {
-        MDNS.addService("http", "tcp", 80);
-        // Custom service for PoPManager discovery
-        MDNS.addService("popminer", "tcp", 80);
-        MDNS.addServiceTxt("popminer", "tcp", "fw", FW_VERSION);
-        MDNS.addServiceTxt("popminer", "tcp", "model", "esp32-cyd");
-        MDNS.addServiceTxt("popminer", "tcp", "name", "PoPMiner Nano");
-        MDNS.addServiceTxt("popminer", "tcp", "host", (const char*)mdnsHostname);
-        Serial.printf("[mDNS] %s.local registered, _popminer._tcp announced\n", mdnsHostname);
-    } else {
-        Serial.println("[mDNS] failed to start (non-fatal)");
-    }
+
+    // ORDER MATTERS: ArduinoOTA.begin() calls MDNS.begin() internally. If
+    // MDNS is already running, that internal call returns early and the
+    // _arduino._tcp service never gets registered - meaning the device
+    // won't appear under Arduino IDE's Network ports. So bring up
+    // ArduinoOTA FIRST (it starts mDNS + registers _arduino._tcp + opens
+    // the OTA TCP listener on 3232), then layer our other services on top.
+    setupArduinoOTA();
+
+    // Add HTTP and PoPManager-discovery services on top of the already-
+    // running mDNS responder.
+    MDNS.addService("http", "tcp", 80);
+    MDNS.addService("popminer", "tcp", 80);
+    MDNS.addServiceTxt("popminer", "tcp", "fw", FW_VERSION);
+    MDNS.addServiceTxt("popminer", "tcp", "model", "esp32-cyd");
+    MDNS.addServiceTxt("popminer", "tcp", "name", "PoPMiner Nano");
+    MDNS.addServiceTxt("popminer", "tcp", "host", (const char*)mdnsHostname);
+    Serial.printf("[mDNS] %s.local with _arduino._tcp + _http._tcp + _popminer._tcp\n",
+                  mdnsHostname);
 
     // HTTP server with settings UI + remote-control endpoints
     setupWebServer();
-
-    // Arduino IDE network OTA (device shows up under IDE's Network ports)
-    setupArduinoOTA();
 
     // Try pool now if wallet is configured
     if (strlen(cfgWallet) > 0) {
