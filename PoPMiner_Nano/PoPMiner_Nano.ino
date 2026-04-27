@@ -60,7 +60,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.1.0"
+#define FW_VERSION         "0.1.1"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"
@@ -1687,7 +1687,12 @@ static void drawOtaProgressBar(uint8_t pct) {
     tft.drawString(buf, SCREEN_W / 2, barY + barH + 10);
 }
 
-static void showOtaScreen(const char* method) {
+// Drawn when OTA begins. `showBar` controls whether a progress bar is
+// rendered - we only show it when the caller has a real percentage feed
+// (ArduinoOTA does, web upload doesn't). For web uploads the browser
+// shows its own progress, so a stuck-at-0% bar on the device would be
+// misleading.
+static void showOtaScreen(const char* method, bool showBar) {
     otaInProgress = true;
     delay(40);  // let any in-flight LVGL frame finish
 
@@ -1708,8 +1713,10 @@ static void showOtaScreen(const char* method) {
     tft.drawString(method, SCREEN_W / 2, 130);
     tft.drawString("Device will reboot when done", SCREEN_W / 2, 215);
 
-    otaProgressLastPct = -1;
-    drawOtaProgressBar(0);
+    if (showBar) {
+        otaProgressLastPct = -1;
+        drawOtaProgressBar(0);
+    }
 }
 
 // ----- OTA: web-upload firmware update -----
@@ -1734,7 +1741,7 @@ static void handleOtaUpload() {
         miningEnabled = false;
         stopMiningTask();
         if (stratumClient.connected()) stratumClient.stop();
-        showOtaScreen("via web upload");
+        showOtaScreen("via web upload", false);  // no bar - browser shows progress
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
             Update.printError(Serial);
         }
@@ -1796,7 +1803,7 @@ static void setupArduinoOTA() {
         miningEnabled = false;
         stopMiningTask();
         if (stratumClient.connected()) stratumClient.stop();
-        showOtaScreen("via Arduino IDE");
+        showOtaScreen("via Arduino IDE", true);  // bar fed by onProgress
     });
     ArduinoOTA.onEnd([]() {
         Serial.println("[OTA] Arduino IDE upload complete");
