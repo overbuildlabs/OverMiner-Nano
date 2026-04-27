@@ -75,6 +75,11 @@
 // inverted, turquoise renders as olive/yellow.
 #define TFT_SWAP_RB false
 
+// When true, runs a 15-second color test pattern at boot showing 8 named
+// pure colors. Used to diagnose panel color order on a new CYD revision.
+// Set to false once the colors look correct.
+#define SHOW_COLOR_TEST true
+
 // Macro that compile-time pre-swaps R<->B in a 0xRRGGBB literal so the
 // source still reads with intended colors. Logo image data is also pre-swapped
 // by convert_logo.py when TFT_SWAP_RB is on.
@@ -786,6 +791,58 @@ void stopMiningTask() {
 }
 
 // ============================================================================
+// COLOR TEST PATTERN (boot-time diagnostic for panel color order)
+// ============================================================================
+// Draws 8 named pure colors via TFT_eSPI (bypassing LVGL/_RB/inversion) so we
+// can see exactly what the panel does with each canonical RGB triple. Photo
+// the screen and tell me which label is rendering as which actual color.
+
+static void runColorTest() {
+    tft.fillScreen(0x0000);  // black per TFT_eSPI convention
+    tft.setTextColor(0xFFFF, 0x0000);  // white on black
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextSize(1);
+    tft.drawString("COLOR TEST - tell me what each shows", 4, 2);
+
+    struct CT { uint16_t rgb565; const char* label; };
+    // 8 swatches. Pure 8-bit values converted to RGB565 by the standard formula.
+    // Source values are in (R,G,B) order at 8 bits per channel; we hand-pack them.
+    auto pack = [](uint8_t r, uint8_t g, uint8_t b) -> uint16_t {
+        return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+    };
+
+    CT colors[8] = {
+        { pack(255,   0,   0), "1 RED"      },  // pure R
+        { pack(  0, 255,   0), "2 GREEN"    },  // pure G
+        { pack(  0,   0, 255), "3 BLUE"     },  // pure B
+        { pack(255, 255, 255), "4 WHITE"    },  // pure W
+        { pack(0x49,0xD9,0xD3),"5 TURQ"     },  // brand turquoise
+        { pack(0xEA,0xB3,0x08),"6 YELLOW"   },  // brand amber
+        { pack(0xA8,0x87,0xE0),"7 PURPLE"   },  // brand purple
+        { pack(0xEF,0x44,0x44),"8 RED2"     },  // brand red
+    };
+
+    const int sqW = 75, sqH = 95;
+    const int gapX = 5, gapY = 8;
+    const int startX = 5, startY = 18;
+
+    for (int i = 0; i < 8; i++) {
+        int row = i / 4;
+        int col = i % 4;
+        int x = startX + col * (sqW + gapX);
+        int y = startY + row * (sqH + gapY);
+        tft.fillRect(x, y, sqW, sqH, colors[i].rgb565);
+        // Label below the color (so a wrong color in the swatch doesn't hide
+        // the white text).
+        tft.setTextColor(0xFFFF, 0x0000);
+        tft.drawString(colors[i].label, x + 2, y + sqH - 12);
+    }
+
+    tft.drawString("Holds 15s, then normal UI", 4, 230);
+    delay(15000);
+}
+
+// ============================================================================
 // LVGL DISPLAY/TOUCH BRIDGE
 // ============================================================================
 
@@ -1434,6 +1491,10 @@ void setup() {
     tft.setRotation(1);
     tft.invertDisplay(TFT_INVERT_COLORS);
     tft.fillScreen(TFT_BLACK);
+
+#if SHOW_COLOR_TEST
+    runColorTest();
+#endif
 
     // Touch init (separate VSPI bus) - match display rotation
     touchSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
