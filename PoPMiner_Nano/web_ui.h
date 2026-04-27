@@ -68,7 +68,7 @@ button{padding:11px 16px;border:0;border-radius:6px;font-weight:700;cursor:point
 
 <div class="card">
 <h2>Actions</h2>
-<button class="btn-warn" onclick="toggleMine()">Toggle Mining</button>
+<button id="btnMine" class="btn-go" onclick="toggleMine()">Start Mining</button>
 <button class="btn-warn" onclick="restart()">Restart</button>
 <button class="btn-stop" onclick="factoryReset()">Factory Reset</button>
 </div>
@@ -86,6 +86,9 @@ async function refresh(){try{
   var pill=document.getElementById("pill");
   pill.textContent=d.mining?"MINING":"IDLE";
   pill.className="pill "+(d.mining?"on":"off");
+  var btn=document.getElementById("btnMine");
+  btn.textContent=d.mining?"Stop Mining":"Start Mining";
+  btn.className=d.mining?"btn-stop":"btn-go";
   document.getElementById("hashrate").textContent=d.hashrate>=1000?(d.hashrate/1000).toFixed(2)+" KH/s":Math.round(d.hashrate)+" H/s";
   document.getElementById("shares").textContent=d.accepted+"/"+d.submitted+(d.rejected?" ("+d.rejected+"r)":"");
   document.getElementById("diff").textContent=d.difficulty>=1?d.difficulty.toFixed(3):d.difficulty.toFixed(6);

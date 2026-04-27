@@ -65,6 +65,12 @@
 #define SCREEN_W 320
 #define SCREEN_H 240
 
+// Some CYD panels are wired with the display's color polarity inverted.
+// SYMPTOM if this is wrong: black background renders as white/light-gray,
+// turquoise renders as red-orange. Flip this to false if your unit is the
+// other variant.
+#define TFT_INVERT_COLORS true
+
 // CYD touch pins (XPT2046 on VSPI - separate from display HSPI)
 #define XPT2046_IRQ  36
 #define XPT2046_MOSI 32
@@ -134,6 +140,32 @@ bool             pendingRestart = false;
 bool             pendingFactoryReset = false;
 unsigned long    pendingActionAt = 0;
 char             mdnsHostname[24] = "popminer";  // filled in setup() with chip-id suffix
+
+// Event log ring buffer - shown on the device settings modal so users can
+// glance at recent activity (share accepted/rejected, pool connect/disconnect,
+// auth events, etc.) without opening the web UI.
+#define LOG_BUFFER_SIZE 8
+struct LogEntry {
+    unsigned long ts;     // millis() when logged
+    char msg[64];
+};
+LogEntry         logBuffer[LOG_BUFFER_SIZE];
+int              logHead = 0;     // next write index
+int              logCount = 0;    // how many entries valid (caps at LOG_BUFFER_SIZE)
+SemaphoreHandle_t logMutex = NULL;
+
+void addLog(const char* msg) {
+    if (!logMutex) return;
+    if (xSemaphoreTake(logMutex, portMAX_DELAY) == pdTRUE) {
+        logBuffer[logHead].ts = millis();
+        strncpy(logBuffer[logHead].msg, msg, sizeof(logBuffer[logHead].msg) - 1);
+        logBuffer[logHead].msg[sizeof(logBuffer[logHead].msg) - 1] = '\0';
+        logHead = (logHead + 1) % LOG_BUFFER_SIZE;
+        if (logCount < LOG_BUFFER_SIZE) logCount++;
+        xSemaphoreGive(logMutex);
+    }
+    Serial.printf("[LOG] %s\n", msg);
+}
 
 Preferences      prefs;
 
@@ -496,6 +528,7 @@ void connectToPool() {
 
     if (stratumClient.connect(host.c_str(), port)) {
         Serial.println("[POOL] Connected. Sending handshake...");
+        addLog("Pool connected");
 
         String sub = "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"" +
                      String(cfgWorker) + "\"]}\n";
@@ -512,6 +545,7 @@ void connectToPool() {
         setStatus("Pool connected", COLOR_GREEN);
     } else {
         Serial.println("[POOL] Failed to connect");
+        addLog("Pool connect FAILED");
         setStatus("Pool connect failed", COLOR_RED);
         poolConnected = false;
     }
@@ -602,6 +636,7 @@ void handleStratumMessages() {
             isAuthorized = doc["result"].as<bool>();
             poolConnected = isAuthorized;
             Serial.printf("[STRATUM] Authorization: %s\n", isAuthorized ? "OK" : "FAILED");
+            addLog(isAuthorized ? "Authorized OK" : "Authorization FAILED");
             setStatus(isAuthorized ? "Authorized" : "Auth failed",
                       isAuthorized ? COLOR_GREEN : COLOR_RED);
         }
@@ -619,6 +654,15 @@ void handleStratumMessages() {
                     }
                 }
                 Serial.printf("[STRATUM] Share accepted%s\n", isBlock ? " - BLOCK!" : "");
+                if (isBlock) {
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "BLOCK FOUND #%u!", (unsigned)blocksFound);
+                    addLog(buf);
+                } else {
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "Share accepted (%u)", (unsigned)sharesAccepted);
+                    addLog(buf);
+                }
                 setStatus(isBlock ? "BLOCK FOUND!" : "Share accepted", COLOR_GREEN);
             } else {
                 sharesRejected++;
@@ -638,6 +682,7 @@ void handleStratumMessages() {
                 Serial.printf("[STRATUM] Share rejected: %s\n", reason);
                 char buf[64];
                 snprintf(buf, sizeof(buf), "Rejected: %s", reason);
+                addLog(buf);
                 setStatus(buf, COLOR_RED);
             }
         }
@@ -993,9 +1038,11 @@ void mine_btn_event_cb(lv_event_t *e) {
     if (miningEnabled) {
         if (!stratumClient.connected()) connectToPool();
         startMiningTask();
+        addLog("Mining started");
         setStatus("Mining started", COLOR_GREEN);
     } else {
         stopMiningTask();
+        addLog("Mining stopped");
         setStatus("Mining stopped", COLOR_DIM);
     }
 
@@ -1017,6 +1064,17 @@ static void reset_cancel_cb(lv_event_t *e) {
 static String maskWallet(const String& wallet) {
     if (wallet.length() < 16) return wallet;
     return wallet.substring(0, 10) + "..." + wallet.substring(wallet.length() - 4);
+}
+
+// Format a log entry as "[Hh:mm:ss] message" for the on-device events list.
+static String formatLogLine(const LogEntry& e) {
+    unsigned long s = e.ts / 1000;
+    unsigned long h = s / 3600;
+    unsigned long m = (s / 60) % 60;
+    unsigned long ss = s % 60;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "[%02lu:%02lu:%02lu] %s", h, m, ss, e.msg);
+    return String(buf);
 }
 
 void gear_btn_event_cb(lv_event_t *e) {
@@ -1041,7 +1099,7 @@ void gear_btn_event_cb(lv_event_t *e) {
     lv_obj_set_style_pad_all(box, 8, 0);
     lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Title bar
+    // Title
     lv_obj_t *title = lv_label_create(box);
     lv_label_set_text(title, "SETTINGS");
     lv_obj_set_style_text_color(title, lv_color_hex(COLOR_TURQUOISE), 0);
@@ -1062,49 +1120,54 @@ void gear_btn_event_cb(lv_event_t *e) {
     lv_obj_center(xLbl);
     lv_obj_add_event_cb(btnClose, reset_cancel_cb, LV_EVENT_CLICKED, modal);
 
-    // Info rows - "LABEL: value" stacked
-    auto addInfoRow = [&](int yPos, const char* label, const String& value, uint32_t valueColor) {
-        lv_obj_t *row = lv_obj_create(box);
-        lv_obj_set_size(row, SCREEN_W - 32, 22);
-        lv_obj_align(row, LV_ALIGN_TOP_LEFT, 0, yPos);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 0, 0);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    // IP - the only identity info we keep on-device. Everything else lives in
+    // the web UI; users hit that for full configuration.
+    String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "(no WiFi)";
 
-        lv_obj_t *lbl = lv_label_create(row);
-        lv_label_set_text(lbl, label);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(COLOR_DIM), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_t *ipHeader = lv_label_create(box);
+    lv_label_set_text(ipHeader, "WEB UI");
+    lv_obj_set_style_text_color(ipHeader, lv_color_hex(COLOR_DIM), 0);
+    lv_obj_set_style_text_font(ipHeader, &lv_font_montserrat_14, 0);
+    lv_obj_align(ipHeader, LV_ALIGN_TOP_LEFT, 0, 36);
 
-        lv_obj_t *val = lv_label_create(row);
-        lv_label_set_text(val, value.c_str());
-        lv_obj_set_style_text_color(val, lv_color_hex(valueColor), 0);
-        lv_obj_set_style_text_font(val, &lv_font_montserrat_14, 0);
-        lv_obj_align(val, LV_ALIGN_LEFT_MID, 90, 0);
-    };
+    lv_obj_t *ipVal = lv_label_create(box);
+    String ipText = "http://" + ip;
+    lv_label_set_text(ipVal, ipText.c_str());
+    lv_obj_set_style_text_color(ipVal, lv_color_hex(COLOR_TURQUOISE), 0);
+    lv_obj_set_style_text_font(ipVal, &lv_font_montserrat_20, 0);
+    lv_obj_align(ipVal, LV_ALIGN_TOP_LEFT, 0, 54);
 
-    String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "(disconnected)";
-    String ssid = (WiFi.status() == WL_CONNECTED) ? WiFi.SSID() : "-";
+    // Recent events feed (last 4 entries from the ring buffer)
+    lv_obj_t *evtHeader = lv_label_create(box);
+    lv_label_set_text(evtHeader, "RECENT EVENTS");
+    lv_obj_set_style_text_color(evtHeader, lv_color_hex(COLOR_DIM), 0);
+    lv_obj_set_style_text_font(evtHeader, &lv_font_montserrat_14, 0);
+    lv_obj_align(evtHeader, LV_ALIGN_TOP_LEFT, 0, 92);
 
-    int yRow = 32;
-    addInfoRow(yRow,        "IP:",     ip,                       COLOR_TURQUOISE); yRow += 22;
-    addInfoRow(yRow,        "WIFI:",   ssid,                     COLOR_TEXT);      yRow += 22;
-    addInfoRow(yRow,        "POOL:",   String(cfgPool),          COLOR_TEXT);      yRow += 22;
-    addInfoRow(yRow,        "WORKER:", String(cfgWorker),        COLOR_TEXT);      yRow += 22;
-    addInfoRow(yRow,        "WALLET:", maskWallet(cfgWallet),    COLOR_TEXT);      yRow += 22;
-    addInfoRow(yRow,        "FW:",     String(FW_VERSION),       COLOR_DIM);
+    String feed;
+    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (logCount == 0) {
+            feed = "(no events yet)";
+        } else {
+            int shown = 0;
+            int idx = (logHead - 1 + LOG_BUFFER_SIZE) % LOG_BUFFER_SIZE;
+            for (int i = 0; i < logCount && shown < 4; i++) {
+                if (shown > 0) feed += "\n";
+                feed += formatLogLine(logBuffer[idx]);
+                idx = (idx - 1 + LOG_BUFFER_SIZE) % LOG_BUFFER_SIZE;
+                shown++;
+            }
+        }
+        xSemaphoreGive(logMutex);
+    }
 
-    // Web UI hint - both IP and mDNS work
-    lv_obj_t *hint = lv_label_create(box);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(hint, SCREEN_W - 40);
-    String hintText = "Web UI: http://" + ip + "  /  http://" + String(mdnsHostname) + ".local";
-    lv_label_set_text(hint, hintText.c_str());
-    lv_obj_set_style_text_color(hint, lv_color_hex(COLOR_DIM), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 0, -44);
+    lv_obj_t *evt = lv_label_create(box);
+    lv_label_set_long_mode(evt, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(evt, SCREEN_W - 40);
+    lv_label_set_text(evt, feed.c_str());
+    lv_obj_set_style_text_color(evt, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(evt, &lv_font_montserrat_14, 0);
+    lv_obj_align(evt, LV_ALIGN_TOP_LEFT, 0, 110);
 
     // Factory reset button - bottom
     lv_obj_t *btnReset = lv_btn_create(box);
@@ -1347,10 +1410,12 @@ void setup() {
     Serial.printf("\n=== PoPMiner Nano %s ===\n", FW_VERSION);
 
     miningStateMutex = xSemaphoreCreateMutex();
+    logMutex = xSemaphoreCreateMutex();
 
     // Display init - rotation 1 = landscape, USB on left
     tft.begin();
     tft.setRotation(1);
+    tft.invertDisplay(TFT_INVERT_COLORS);
     tft.fillScreen(TFT_BLACK);
 
     // Touch init (separate VSPI bus) - match display rotation
