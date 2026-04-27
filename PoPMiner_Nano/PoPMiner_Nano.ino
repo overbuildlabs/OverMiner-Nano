@@ -38,10 +38,14 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <WiFiClient.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <math.h>
 #include <esp_system.h>
+
+#include "web_ui.h"
 
 #define LV_CONF_INCLUDE_SIMPLE
 #include "lv_conf.h"
@@ -124,6 +128,11 @@ bool             wifiReady      = false;
 WiFiClient       stratumClient;
 SemaphoreHandle_t miningStateMutex = NULL;
 TaskHandle_t     MinerTask = NULL;
+
+WebServer        webServer(80);
+bool             pendingRestart = false;
+bool             pendingFactoryReset = false;
+unsigned long    pendingActionAt = 0;
 
 Preferences      prefs;
 
@@ -1202,6 +1211,112 @@ void wifiSetupBlocking() {
 }
 
 // ============================================================================
+// WEB SERVER (settings page, JSON stats, remote actions)
+// ============================================================================
+
+static void handleRoot() {
+    webServer.send_P(200, "text/html", WEB_UI_HTML);
+}
+
+static void handleApiStats() {
+    StaticJsonDocument<512> doc;
+    doc["fw"]              = FW_VERSION;
+    doc["ip"]              = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("0.0.0.0");
+    doc["mining"]          = miningEnabled;
+    doc["pool_connected"]  = poolConnected;
+    doc["authorized"]      = isAuthorized;
+    doc["hashrate"]        = currentHashrate;
+    doc["difficulty"]      = currentDifficulty;
+    doc["submitted"]       = (uint32_t)sharesSubmitted;
+    doc["accepted"]        = (uint32_t)sharesAccepted;
+    doc["rejected"]        = (uint32_t)sharesRejected;
+    doc["blocks"]          = (uint32_t)blocksFound;
+    doc["jobs"]            = (uint32_t)jobsReceived;
+    doc["total_hashes"]    = (double)totalHashes;
+    doc["pool"]            = cfgPool;
+    doc["uptime_s"]        = (uint32_t)(millis() / 1000);
+
+    String out;
+    serializeJson(doc, out);
+    webServer.send(200, "application/json", out);
+}
+
+static void handleApiConfigGet() {
+    StaticJsonDocument<512> doc;
+    doc["pool"]   = cfgPool;
+    doc["worker"] = cfgWorker;
+    doc["wallet"] = cfgWallet;
+    String out;
+    serializeJson(doc, out);
+    webServer.send(200, "application/json", out);
+}
+
+static void handleApiConfigPost() {
+    if (webServer.hasArg("pool"))   strncpy(cfgPool,   webServer.arg("pool").c_str(),   sizeof(cfgPool)   - 1);
+    if (webServer.hasArg("worker")) strncpy(cfgWorker, webServer.arg("worker").c_str(), sizeof(cfgWorker) - 1);
+    if (webServer.hasArg("wallet")) strncpy(cfgWallet, webServer.arg("wallet").c_str(), sizeof(cfgWallet) - 1);
+    cfgPool[sizeof(cfgPool)-1]     = '\0';
+    cfgWorker[sizeof(cfgWorker)-1] = '\0';
+    cfgWallet[sizeof(cfgWallet)-1] = '\0';
+    saveConfig();
+    Serial.println("[WEB] Config saved via web UI");
+    webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+static void handleApiMineToggle() {
+    if (strlen(cfgWallet) == 0) {
+        webServer.send(400, "application/json", "{\"ok\":false,\"error\":\"wallet not set\"}");
+        return;
+    }
+    miningEnabled = !miningEnabled;
+    if (miningEnabled) {
+        if (!stratumClient.connected()) connectToPool();
+        startMiningTask();
+    } else {
+        stopMiningTask();
+    }
+    prefs.begin("popminer", false);
+    prefs.putBool("mining", miningEnabled);
+    prefs.end();
+    Serial.printf("[WEB] Mining %s via web UI\n", miningEnabled ? "STARTED" : "STOPPED");
+    webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+static void handleApiRestart() {
+    Serial.println("[WEB] Restart requested via web UI");
+    webServer.send(200, "application/json", "{\"ok\":true}");
+    // Defer the actual restart so the response can flush
+    pendingRestart = true;
+    pendingActionAt = millis() + 500;
+}
+
+static void handleApiFactoryReset() {
+    Serial.println("[WEB] Factory reset requested via web UI");
+    webServer.send(200, "application/json", "{\"ok\":true}");
+    pendingFactoryReset = true;
+    pendingActionAt = millis() + 500;
+}
+
+static void handleNotFound() {
+    webServer.sendHeader("Location", "/", true);
+    webServer.send(302, "text/plain", "");
+}
+
+void setupWebServer() {
+    webServer.on("/",                    HTTP_GET,  handleRoot);
+    webServer.on("/api/stats",           HTTP_GET,  handleApiStats);
+    webServer.on("/api/config",          HTTP_GET,  handleApiConfigGet);
+    webServer.on("/api/config",          HTTP_POST, handleApiConfigPost);
+    webServer.on("/api/mine",            HTTP_POST, handleApiMineToggle);
+    webServer.on("/api/restart",         HTTP_POST, handleApiRestart);
+    webServer.on("/api/factory_reset",   HTTP_POST, handleApiFactoryReset);
+    webServer.onNotFound(handleNotFound);
+    webServer.begin();
+    Serial.printf("[WEB] HTTP server up at http://%s/  (and http://popminer.local/)\n",
+                  WiFi.localIP().toString().c_str());
+}
+
+// ============================================================================
 // SETUP & LOOP
 // ============================================================================
 
@@ -1249,6 +1364,17 @@ void setup() {
     // WiFi (blocks on first boot until user finishes captive portal)
     wifiSetupBlocking();
 
+    // mDNS - reachable at http://popminer.local/
+    if (MDNS.begin("popminer")) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.println("[mDNS] popminer.local registered");
+    } else {
+        Serial.println("[mDNS] failed to start (non-fatal)");
+    }
+
+    // HTTP server with settings UI + remote-control endpoints
+    setupWebServer();
+
     // Try pool now if wallet is configured
     if (strlen(cfgWallet) > 0) {
         connectToPool();
@@ -1265,6 +1391,18 @@ void setup() {
 
 void loop() {
     lv_timer_handler();
+
+    // Handle web UI requests (non-blocking poll)
+    webServer.handleClient();
+
+    // Deferred actions from web UI (let HTTP response flush before doing them)
+    if ((pendingRestart || pendingFactoryReset) && millis() >= pendingActionAt) {
+        if (pendingFactoryReset) {
+            factory_reset_now();  // Calls ESP.restart() internally
+        } else {
+            ESP.restart();
+        }
+    }
 
     if (WiFi.status() == WL_CONNECTED) {
         wifiReady = true;
