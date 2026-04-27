@@ -71,6 +71,23 @@
 // other variant.
 #define TFT_INVERT_COLORS true
 
+// Some CYD panels have R and B channels swapped at the panel level (BGR
+// hardware order). SYMPTOM if this is wrong: turquoise renders as purple
+// or orange/olive, red appears blue. Flip to false if your unit doesn't
+// need the swap.
+#define TFT_SWAP_RB true
+
+// Macro that compile-time pre-swaps R<->B in a 0xRRGGBB literal so the
+// source still reads with intended colors. Logo image data is also pre-swapped
+// by convert_logo.py when TFT_SWAP_RB is on.
+#if TFT_SWAP_RB
+  #define _RB(c) ((((uint32_t)(c) & 0x0000FFUL) << 16) | \
+                  ((uint32_t)(c) & 0x00FF00UL) | \
+                  (((uint32_t)(c) & 0xFF0000UL) >> 16))
+#else
+  #define _RB(c) (c)
+#endif
+
 // CYD touch pins (XPT2046 on VSPI - separate from display HSPI)
 #define XPT2046_IRQ  36
 #define XPT2046_MOSI 32
@@ -87,18 +104,20 @@ uint16_t TOUCH_Y_MIN = 200;
 uint16_t TOUCH_Y_MAX = 3700;
 
 // ==================== COLORS (proofofprints.com palette) ====================
-#define COLOR_BG          0x000000  // pure black - matches website's deepest gradient
-#define COLOR_CARD        0x0E1430  // very dark navy card surface, slightly above BG
-#define COLOR_TURQUOISE   0x49D9D3  // primary brand (site)
-#define COLOR_YELLOW      0xEAB308  // amber/yellow (site - Tailwind yellow-500)
-#define COLOR_PURPLE      0xA887E0  // difficulty accent (PoPMobile-only - site has no purple)
-#define COLOR_RED_BRIGHT  0xEF4444  // bright red (Tailwind red-500) - JOBS card text
-#define COLOR_STOP        0xDC2626  // button red (Tailwind red-600) - STOP button
-#define COLOR_ORANGE      0xFF9933  // warnings
-#define COLOR_TEXT        0xFFFFFF  // primary text
-#define COLOR_DIM         0x9CA3AF  // dim labels (site --tw-text-color)
-#define COLOR_GREEN       0x22C55E  // success state (site - Tailwind green-500)
-#define COLOR_RED         0x7F1D1D  // dark red for error backgrounds (site)
+// Each color is wrapped in _RB() so that on R/B-swapped panels the bytes are
+// pre-swapped at compile time. Source still reads with correct hex values.
+#define COLOR_BG          _RB(0x000000)  // pure black
+#define COLOR_CARD        _RB(0x0E1430)  // very dark navy card surface
+#define COLOR_TURQUOISE   _RB(0x49D9D3)  // primary brand (site)
+#define COLOR_YELLOW      _RB(0xEAB308)  // amber/yellow (site - Tailwind yellow-500)
+#define COLOR_PURPLE      _RB(0xA887E0)  // difficulty accent
+#define COLOR_RED_BRIGHT  _RB(0xEF4444)  // bright red - HASHES card text
+#define COLOR_STOP        _RB(0xDC2626)  // button red - STOP button
+#define COLOR_ORANGE      _RB(0xFF9933)  // warnings
+#define COLOR_TEXT        _RB(0xFFFFFF)  // primary text (white - swap is identity)
+#define COLOR_DIM         _RB(0x9CA3AF)  // dim labels
+#define COLOR_GREEN       _RB(0x22C55E)  // success state
+#define COLOR_RED         _RB(0x7F1D1D)  // dark red for error backgrounds
 
 // Old name kept for back-compat with the JOBS card constructor call below.
 #define COLOR_CORAL       COLOR_RED_BRIGHT

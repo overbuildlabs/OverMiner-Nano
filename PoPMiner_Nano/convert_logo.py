@@ -17,12 +17,18 @@ INPUT  = r"L:\PoPManager\src-tauri\icons\32x32.png"
 OUTPUT = r"L:\PoPMiner\PoPMiner_Nano\pop_logo.c"
 NAME   = "pop_logo"
 
+# Match TFT_SWAP_RB in PoPMiner_Nano.ino - if the panel has BGR-swapped
+# channels we pre-swap R<->B in the image data so it renders correctly.
+SWAP_RB = True
+
 img = Image.open(INPUT).convert("RGBA")
 w, h = img.size
 print(f"Loaded {INPUT}: {w}x{h}, {len(img.getdata())} pixels")
 
 bytes_out = bytearray()
 for r, g, b, a in img.getdata():
+    if SWAP_RB:
+        r, b = b, r
     r5 = (r >> 3) & 0x1F
     g6 = (g >> 2) & 0x3F
     b5 = (b >> 3) & 0x1F
