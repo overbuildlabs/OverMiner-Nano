@@ -33,9 +33,10 @@ for r, g, b, a in img.getdata():
     g6 = (g >> 2) & 0x3F
     b5 = (b >> 3) & 0x1F
     rgb565 = (r5 << 11) | (g6 << 5) | b5
-    # LV_COLOR_16_SWAP=1 -> high byte first
-    bytes_out.append((rgb565 >> 8) & 0xFF)
+    # LV_COLOR_16_SWAP=0 + little-endian ESP32 -> low byte first.
+    # Must match the LV_COLOR_16_SWAP setting in lv_conf.h.
     bytes_out.append(rgb565 & 0xFF)
+    bytes_out.append((rgb565 >> 8) & 0xFF)
     bytes_out.append(a)
 
 # Format as C array with 12 bytes per row for readability
