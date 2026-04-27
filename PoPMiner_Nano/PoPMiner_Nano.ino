@@ -1246,6 +1246,14 @@ void gear_btn_event_cb(lv_event_t *e) {
     lv_obj_set_style_text_font(ipVal, &lv_font_montserrat_20, 0);
     lv_obj_align(ipVal, LV_ALIGN_TOP_LEFT, 0, 54);
 
+    // Firmware version (right-aligned, same line as IP)
+    lv_obj_t *fwLine = lv_label_create(box);
+    String fwText = "FW " + String(FW_VERSION);
+    lv_label_set_text(fwLine, fwText.c_str());
+    lv_obj_set_style_text_color(fwLine, lv_color_hex(COLOR_DIM), 0);
+    lv_obj_set_style_text_font(fwLine, &lv_font_montserrat_14, 0);
+    lv_obj_align(fwLine, LV_ALIGN_TOP_RIGHT, 0, 38);
+
     // Recent events feed (last 4 entries from the ring buffer)
     lv_obj_t *evtHeader = lv_label_create(box);
     lv_label_set_text(evtHeader, "RECENT EVENTS");
@@ -1646,6 +1654,64 @@ static void handleNotFound() {
     webServer.send(302, "text/plain", "");
 }
 
+// Pack 24-bit RGB into RGB565 for direct TFT_eSPI calls (used by the OTA
+// takeover screen which bypasses LVGL).
+static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+}
+
+// Full-screen "FIRMWARE UPDATE - DO NOT UNPLUG" takeover. Called when OTA
+// begins (either source). Disables LVGL repaint via otaInProgress so this
+// stays on screen until reboot. The progress bar is updated by callers when
+// a percentage is available (ArduinoOTA gives us one; web upload doesn't
+// know total size, so it just leaves the bar at 0%).
+static int otaProgressLastPct = -1;
+
+static void drawOtaProgressBar(uint8_t pct) {
+    if (otaProgressLastPct == pct) return;
+    otaProgressLastPct = pct;
+    const int barX = 30, barY = 165, barW = SCREEN_W - 60, barH = 14;
+    // Outer frame (drawn once is fine, but cheap to repaint)
+    tft.drawRect(barX, barY, barW, barH, rgb565(0x49, 0xD9, 0xD3));
+    // Fill inside
+    int fillW = (barW - 2) * pct / 100;
+    tft.fillRect(barX + 1, barY + 1, fillW,            barH - 2, rgb565(0x49, 0xD9, 0xD3));
+    tft.fillRect(barX + 1 + fillW, barY + 1, barW - 2 - fillW, barH - 2, 0x0000);
+    // % text below
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%u%%", pct);
+    tft.fillRect(barX, barY + barH + 4, barW, 16, 0x0000);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(rgb565(0x9C, 0xA3, 0xAF), 0x0000);
+    tft.setTextSize(1);
+    tft.drawString(buf, SCREEN_W / 2, barY + barH + 10);
+}
+
+static void showOtaScreen(const char* method) {
+    otaInProgress = true;
+    delay(40);  // let any in-flight LVGL frame finish
+
+    tft.fillScreen(0x0000);
+
+    tft.setTextDatum(MC_DATUM);
+
+    tft.setTextSize(2);
+    tft.setTextColor(rgb565(0x49, 0xD9, 0xD3), 0x0000);
+    tft.drawString("FIRMWARE UPDATE", SCREEN_W / 2, 50);
+
+    tft.setTextSize(2);
+    tft.setTextColor(rgb565(0xEF, 0x44, 0x44), 0x0000);
+    tft.drawString("DO NOT UNPLUG", SCREEN_W / 2, 90);
+
+    tft.setTextSize(1);
+    tft.setTextColor(rgb565(0x9C, 0xA3, 0xAF), 0x0000);
+    tft.drawString(method, SCREEN_W / 2, 130);
+    tft.drawString("Device will reboot when done", SCREEN_W / 2, 215);
+
+    otaProgressLastPct = -1;
+    drawOtaProgressBar(0);
+}
+
 // ----- OTA: web-upload firmware update -----
 //
 // The browser POSTs a multipart form with the .bin to /api/ota. Each chunk
@@ -1668,7 +1734,7 @@ static void handleOtaUpload() {
         miningEnabled = false;
         stopMiningTask();
         if (stratumClient.connected()) stratumClient.stop();
-        otaInProgress = true;
+        showOtaScreen("via web upload");
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
             Update.printError(Serial);
         }
@@ -1730,17 +1796,20 @@ static void setupArduinoOTA() {
         miningEnabled = false;
         stopMiningTask();
         if (stratumClient.connected()) stratumClient.stop();
+        showOtaScreen("via Arduino IDE");
     });
     ArduinoOTA.onEnd([]() {
         Serial.println("[OTA] Arduino IDE upload complete");
         addLog("Arduino-OTA OK");
+        drawOtaProgressBar(100);
     });
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        static unsigned int lastPct = 0;
         unsigned int pct = (progress * 100) / total;
-        if (pct != lastPct && pct % 10 == 0) {
+        drawOtaProgressBar((uint8_t)pct);
+        static unsigned int lastSerialPct = 0;
+        if (pct != lastSerialPct && pct % 10 == 0) {
             Serial.printf("[OTA] %u%%\n", pct);
-            lastPct = pct;
+            lastSerialPct = pct;
         }
     });
     ArduinoOTA.onError([](ota_error_t error) {
@@ -1887,7 +1956,12 @@ void setup() {
 }
 
 void loop() {
-    lv_timer_handler();
+    // Skip LVGL while OTA is in progress so the "FIRMWARE UPDATE - DO NOT
+    // UNPLUG" takeover screen drawn directly via TFT_eSPI doesn't get
+    // repainted over.
+    if (!otaInProgress) {
+        lv_timer_handler();
+    }
 
     // Handle web UI requests (non-blocking poll)
     webServer.handleClient();
@@ -1921,8 +1995,9 @@ void loop() {
         poolConnected = false;
     }
 
-    // UI refresh (4 Hz - keeps numbers lively without thrashing LVGL)
-    if (millis() - lastUiUpdate >= 250) {
+    // UI refresh (4 Hz - keeps numbers lively without thrashing LVGL).
+    // Skipped during OTA so the takeover screen stays put.
+    if (!otaInProgress && millis() - lastUiUpdate >= 250) {
         lastUiUpdate = millis();
         updateUI();
     }

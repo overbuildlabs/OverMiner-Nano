@@ -132,7 +132,6 @@ button{padding:11px 16px;border:0;border-radius:6px;font-weight:700;cursor:point
 </div>
 <p id="otaText" style="color:#9CA3AF;font-size:12px;margin:6px 0 0"></p>
 </div>
-<p style="color:#6B7280;font-size:11px;margin-top:10px">Or: in Arduino IDE select <code style="color:#9CA3AF">Tools &rarr; Port &rarr; Network ports &rarr; popminer-XXXX</code> to upload directly over WiFi.</p>
 </div>
 
 <div class="card">
