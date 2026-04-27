@@ -65,17 +65,15 @@
 #define SCREEN_W 320
 #define SCREEN_H 240
 
-// Some CYD panels are wired with the display's color polarity inverted.
-// SYMPTOM if this is wrong: black background renders as white/light-gray,
-// turquoise renders as red-orange. Flip this to false if your unit is the
-// other variant.
-#define TFT_INVERT_COLORS true
+// Some CYD panels need color polarity inverted on top of TFT_eSPI's default.
+// SYMPTOM that you need to FLIP this: black BG renders white, all colors
+// look like their photographic negative.
+#define TFT_INVERT_COLORS false
 
 // Some CYD panels have R and B channels swapped at the panel level (BGR
-// hardware order). SYMPTOM if this is wrong: turquoise renders as purple
-// or orange/olive, red appears blue. Flip to false if your unit doesn't
-// need the swap.
-#define TFT_SWAP_RB true
+// hardware order). SYMPTOM that you need to FLIP this: red and blue look
+// inverted, turquoise renders as olive/yellow.
+#define TFT_SWAP_RB false
 
 // Macro that compile-time pre-swaps R<->B in a 0xRRGGBB literal so the
 // source still reads with intended colors. Logo image data is also pre-swapped

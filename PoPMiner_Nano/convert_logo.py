@@ -19,7 +19,7 @@ NAME   = "pop_logo"
 
 # Match TFT_SWAP_RB in PoPMiner_Nano.ino - if the panel has BGR-swapped
 # channels we pre-swap R<->B in the image data so it renders correctly.
-SWAP_RB = True
+SWAP_RB = False
 
 img = Image.open(INPUT).convert("RGBA")
 w, h = img.size
