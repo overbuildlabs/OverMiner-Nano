@@ -75,10 +75,10 @@
 // inverted, turquoise renders as olive/yellow.
 #define TFT_SWAP_RB false
 
-// When true, runs a 15-second color test pattern at boot showing 8 named
-// pure colors. Used to diagnose panel color order on a new CYD revision.
+// When true, runs a color test pattern at boot showing 8 named pure colors.
+// Pattern stays on screen until you tap, so you can take a clean photo.
 // Set to false once the colors look correct.
-#define SHOW_COLOR_TEST false
+#define SHOW_COLOR_TEST true
 
 // Macro that compile-time pre-swaps R<->B in a 0xRRGGBB literal so the
 // source still reads with intended colors. Logo image data is also pre-swapped
@@ -802,24 +802,22 @@ static void runColorTest() {
     tft.setTextColor(0xFFFF, 0x0000);  // white on black
     tft.setTextDatum(TL_DATUM);
     tft.setTextSize(1);
-    tft.drawString("COLOR TEST - tell me what each shows", 4, 2);
+    tft.drawString("COLOR TEST - photo this then tap to dismiss", 4, 2);
 
     struct CT { uint16_t rgb565; const char* label; };
-    // 8 swatches. Pure 8-bit values converted to RGB565 by the standard formula.
-    // Source values are in (R,G,B) order at 8 bits per channel; we hand-pack them.
     auto pack = [](uint8_t r, uint8_t g, uint8_t b) -> uint16_t {
         return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
     };
 
     CT colors[8] = {
-        { pack(255,   0,   0), "1 RED"      },  // pure R
-        { pack(  0, 255,   0), "2 GREEN"    },  // pure G
-        { pack(  0,   0, 255), "3 BLUE"     },  // pure B
-        { pack(255, 255, 255), "4 WHITE"    },  // pure W
-        { pack(0x49,0xD9,0xD3),"5 TURQ"     },  // brand turquoise
-        { pack(0xEA,0xB3,0x08),"6 YELLOW"   },  // brand amber
-        { pack(0xA8,0x87,0xE0),"7 PURPLE"   },  // brand purple
-        { pack(0xEF,0x44,0x44),"8 RED2"     },  // brand red
+        { pack(255,   0,   0), "1 RED"      },
+        { pack(  0, 255,   0), "2 GREEN"    },
+        { pack(  0,   0, 255), "3 BLUE"     },
+        { pack(255, 255, 255), "4 WHITE"    },
+        { pack(0x49,0xD9,0xD3),"5 TURQ"     },
+        { pack(0xEA,0xB3,0x08),"6 YELLOW"   },
+        { pack(0xA8,0x87,0xE0),"7 PURPLE"   },
+        { pack(0xEF,0x44,0x44),"8 RED2"     },
     };
 
     const int sqW = 75, sqH = 95;
@@ -832,14 +830,25 @@ static void runColorTest() {
         int x = startX + col * (sqW + gapX);
         int y = startY + row * (sqH + gapY);
         tft.fillRect(x, y, sqW, sqH, colors[i].rgb565);
-        // Label below the color (so a wrong color in the swatch doesn't hide
-        // the white text).
+        // Black label background just above the swatch so labels are
+        // readable regardless of how the swatch color renders.
+        tft.fillRect(x, y + sqH - 14, sqW, 14, 0x0000);
         tft.setTextColor(0xFFFF, 0x0000);
-        tft.drawString(colors[i].label, x + 2, y + sqH - 12);
+        tft.drawString(colors[i].label, x + 4, y + sqH - 12);
     }
 
-    tft.drawString("Holds 15s, then normal UI", 4, 230);
-    delay(15000);
+    tft.drawString("Tap screen to continue", 4, 230);
+
+    // Wait for any touch instead of a timeout so the user has unlimited time
+    // to photograph the pattern.
+    while (true) {
+        if (ts.touched()) {
+            // Debounce - wait for release
+            while (ts.touched()) delay(20);
+            break;
+        }
+        delay(20);
+    }
 }
 
 // ============================================================================
