@@ -1400,7 +1400,7 @@ void setup() {
         MDNS.addServiceTxt("popminer", "tcp", "fw", FW_VERSION);
         MDNS.addServiceTxt("popminer", "tcp", "model", "esp32-cyd");
         MDNS.addServiceTxt("popminer", "tcp", "name", "PoPMiner Nano");
-        MDNS.addServiceTxt("popminer", "tcp", "host", mdnsHostname);
+        MDNS.addServiceTxt("popminer", "tcp", "host", (const char*)mdnsHostname);
         Serial.printf("[mDNS] %s.local registered, _popminer._tcp announced\n", mdnsHostname);
     } else {
         Serial.println("[mDNS] failed to start (non-fatal)");
