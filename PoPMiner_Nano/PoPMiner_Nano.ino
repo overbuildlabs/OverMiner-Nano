@@ -133,6 +133,7 @@ WebServer        webServer(80);
 bool             pendingRestart = false;
 bool             pendingFactoryReset = false;
 unsigned long    pendingActionAt = 0;
+char             mdnsHostname[24] = "popminer";  // filled in setup() with chip-id suffix
 
 Preferences      prefs;
 
@@ -1095,11 +1096,12 @@ void gear_btn_event_cb(lv_event_t *e) {
     addInfoRow(yRow,        "WALLET:", maskWallet(cfgWallet),    COLOR_TEXT);      yRow += 22;
     addInfoRow(yRow,        "FW:",     String(FW_VERSION),       COLOR_DIM);
 
-    // Hint about web GUI (placeholder until we add it)
+    // Web UI hint - both IP and mDNS work
     lv_obj_t *hint = lv_label_create(box);
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, SCREEN_W - 40);
-    lv_label_set_text(hint, "Open http://" + ip + " in a browser on the same WiFi to edit pool / wallet (web GUI coming soon).");
+    String hintText = "Web UI: http://" + ip + "  /  http://" + String(mdnsHostname) + ".local";
+    lv_label_set_text(hint, hintText.c_str());
     lv_obj_set_style_text_color(hint, lv_color_hex(COLOR_DIM), 0);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 0, -44);
@@ -1218,6 +1220,24 @@ static void handleRoot() {
     webServer.send_P(200, "text/html", WEB_UI_HTML);
 }
 
+// Device identity for PoPManager discovery (separate from /api/stats so the
+// info-pull is cheap to refresh and the stats-pull stays focused on metrics).
+static void handleApiInfo() {
+    StaticJsonDocument<384> doc;
+    doc["fw"]      = FW_VERSION;
+    doc["name"]    = "PoPMiner Nano";
+    doc["model"]   = "esp32-cyd";
+    doc["host"]    = mdnsHostname;
+    doc["mac"]     = WiFi.macAddress();
+    doc["ip"]      = WiFi.localIP().toString();
+    doc["sdk"]     = String(ESP.getSdkVersion());
+    doc["heap"]    = (uint32_t)ESP.getFreeHeap();
+    doc["uptime_s"]= (uint32_t)(millis() / 1000);
+    String out;
+    serializeJson(doc, out);
+    webServer.send(200, "application/json", out);
+}
+
 static void handleApiStats() {
     StaticJsonDocument<512> doc;
     doc["fw"]              = FW_VERSION;
@@ -1304,6 +1324,7 @@ static void handleNotFound() {
 
 void setupWebServer() {
     webServer.on("/",                    HTTP_GET,  handleRoot);
+    webServer.on("/api/info",            HTTP_GET,  handleApiInfo);
     webServer.on("/api/stats",           HTTP_GET,  handleApiStats);
     webServer.on("/api/config",          HTTP_GET,  handleApiConfigGet);
     webServer.on("/api/config",          HTTP_POST, handleApiConfigPost);
@@ -1312,8 +1333,8 @@ void setupWebServer() {
     webServer.on("/api/factory_reset",   HTTP_POST, handleApiFactoryReset);
     webServer.onNotFound(handleNotFound);
     webServer.begin();
-    Serial.printf("[WEB] HTTP server up at http://%s/  (and http://popminer.local/)\n",
-                  WiFi.localIP().toString().c_str());
+    Serial.printf("[WEB] HTTP server up at http://%s/  (and http://%s.local/)\n",
+                  WiFi.localIP().toString().c_str(), mdnsHostname);
 }
 
 // ============================================================================
@@ -1364,10 +1385,23 @@ void setup() {
     // WiFi (blocks on first boot until user finishes captive portal)
     wifiSetupBlocking();
 
-    // mDNS - reachable at http://popminer.local/
-    if (MDNS.begin("popminer")) {
+    // mDNS - unique hostname per device so multiple PoPMiner Nanos can
+    // coexist on one LAN. Also publishes a custom _popminer._tcp service so
+    // PoPManager (or any mDNS scanner) can discover all devices in one query.
+    {
+        uint64_t mac = ESP.getEfuseMac();
+        snprintf(mdnsHostname, sizeof(mdnsHostname), "popminer-%04x",
+                 (uint16_t)(mac & 0xFFFF));
+    }
+    if (MDNS.begin(mdnsHostname)) {
         MDNS.addService("http", "tcp", 80);
-        Serial.println("[mDNS] popminer.local registered");
+        // Custom service for PoPManager discovery
+        MDNS.addService("popminer", "tcp", 80);
+        MDNS.addServiceTxt("popminer", "tcp", "fw", FW_VERSION);
+        MDNS.addServiceTxt("popminer", "tcp", "model", "esp32-cyd");
+        MDNS.addServiceTxt("popminer", "tcp", "name", "PoPMiner Nano");
+        MDNS.addServiceTxt("popminer", "tcp", "host", mdnsHostname);
+        Serial.printf("[mDNS] %s.local registered, _popminer._tcp announced\n", mdnsHostname);
     } else {
         Serial.println("[mDNS] failed to start (non-fatal)");
     }
