@@ -65,10 +65,11 @@
 #define SCREEN_W 320
 #define SCREEN_H 240
 
-// Some CYD panels need color polarity inverted on top of TFT_eSPI's default.
-// SYMPTOM that you need to FLIP this: black BG renders white, all colors
-// look like their photographic negative.
-#define TFT_INVERT_COLORS false
+// Your CYD's panel default state inverts colors (black BG renders white,
+// turquoise renders red/purple). Sending INVON via invertDisplay(true)
+// puts THIS panel into a non-inverting state. The test pattern earlier
+// confirmed this: with INVERT=true, fillRect colors all rendered correctly.
+#define TFT_INVERT_COLORS true
 
 // Some CYD panels have R and B channels swapped at the panel level (BGR
 // hardware order). SYMPTOM that you need to FLIP this: red and blue look
