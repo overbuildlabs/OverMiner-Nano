@@ -68,7 +68,7 @@
 // Some CYD panels need color polarity inverted on top of TFT_eSPI's default.
 // SYMPTOM that you need to FLIP this: black BG renders white, all colors
 // look like their photographic negative.
-#define TFT_INVERT_COLORS false
+#define TFT_INVERT_COLORS true
 
 // Some CYD panels have R and B channels swapped at the panel level (BGR
 // hardware order). SYMPTOM that you need to FLIP this: red and blue look
@@ -78,7 +78,7 @@
 // When true, runs a 15-second color test pattern at boot showing 8 named
 // pure colors. Used to diagnose panel color order on a new CYD revision.
 // Set to false once the colors look correct.
-#define SHOW_COLOR_TEST true
+#define SHOW_COLOR_TEST false
 
 // Macro that compile-time pre-swaps R<->B in a 0xRRGGBB literal so the
 // source still reads with intended colors. Logo image data is also pre-swapped
