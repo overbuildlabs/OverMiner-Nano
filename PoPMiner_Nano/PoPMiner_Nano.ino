@@ -48,6 +48,7 @@
 #include <Preferences.h>
 #include <math.h>
 #include <esp_system.h>
+#include <time.h>
 
 #include "web_ui.h"
 
@@ -59,7 +60,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.1.3"
+#define FW_VERSION         "0.2.0"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"
@@ -79,11 +80,6 @@
 // hardware order). SYMPTOM that you need to FLIP this: red and blue look
 // inverted, turquoise renders as olive/yellow.
 #define TFT_SWAP_RB false
-
-// When true, runs a color test pattern at boot showing 8 named pure colors.
-// Pattern stays on screen until you tap, so you can take a clean photo.
-// Set to false once the colors look correct.
-#define SHOW_COLOR_TEST false
 
 // Macro that compile-time pre-swaps R<->B in a 0xRRGGBB literal so the
 // source still reads with intended colors. Logo image data is also pre-swapped
@@ -190,7 +186,8 @@ bool otaInProgress   = false;
 // auth events, etc.) without opening the web UI.
 #define LOG_BUFFER_SIZE 8
 struct LogEntry {
-    unsigned long ts;     // millis() when logged
+    unsigned long upMs;   // millis() when logged - always valid
+    time_t        epoch;  // 0 if NTP wasn't synced when logged
     char msg[64];
 };
 LogEntry         logBuffer[LOG_BUFFER_SIZE];
@@ -198,10 +195,18 @@ int              logHead = 0;     // next write index
 int              logCount = 0;    // how many entries valid (caps at LOG_BUFFER_SIZE)
 SemaphoreHandle_t logMutex = NULL;
 
+// Returns true once NTP has reported a real time (year >= 2024 sanity check
+// since the ESP32 RTC starts at 1970 and we're well past 2024 in practice).
+static bool isWallClockSynced() {
+    time_t now = time(nullptr);
+    return now > 1700000000;  // Nov 2023 - any later epoch is "synced enough"
+}
+
 void addLog(const char* msg) {
     if (!logMutex) return;
     if (xSemaphoreTake(logMutex, portMAX_DELAY) == pdTRUE) {
-        logBuffer[logHead].ts = millis();
+        logBuffer[logHead].upMs  = millis();
+        logBuffer[logHead].epoch = isWallClockSynced() ? time(nullptr) : 0;
         strncpy(logBuffer[logHead].msg, msg, sizeof(logBuffer[logHead].msg) - 1);
         logBuffer[logHead].msg[sizeof(logBuffer[logHead].msg) - 1] = '\0';
         logHead = (logHead + 1) % LOG_BUFFER_SIZE;
@@ -254,6 +259,8 @@ void gear_btn_event_cb(lv_event_t *e);
 void factory_reset_now();
 void loadConfig();
 void saveConfig();
+void loadStats();
+void saveStats();
 void wifiSetupBlocking();
 
 // ============================================================================
@@ -543,6 +550,7 @@ void submitShare(const char* jobId, uint64_t nonce) {
     Serial.printf("[STRATUM] Submitting share - Job: %s Nonce: %s\n", jobId, nonceHex);
     stratumClient.print(msg);
     sharesSubmitted++;
+    saveStats();
     setStatus("Share submitted", COLOR_YELLOW);
 }
 
@@ -708,6 +716,7 @@ void handleStratumMessages() {
                     addLog(buf);
                 }
                 setStatus(isBlock ? "BLOCK FOUND!" : "Share accepted", COLOR_GREEN);
+                saveStats();
             } else {
                 sharesRejected++;
                 const char* reason = "rejected";
@@ -728,6 +737,7 @@ void handleStratumMessages() {
                 snprintf(buf, sizeof(buf), "Rejected: %s", reason);
                 addLog(buf);
                 setStatus(buf, COLOR_RED);
+                saveStats();
             }
         }
     }
@@ -809,67 +819,6 @@ void stopMiningTask() {
         MinerTask = NULL;
         delay(50);
         Serial.println("[MINER] Task stopped");
-    }
-}
-
-// ============================================================================
-// COLOR TEST PATTERN (boot-time diagnostic for panel color order)
-// ============================================================================
-// Draws 8 named pure colors via TFT_eSPI (bypassing LVGL/_RB/inversion) so we
-// can see exactly what the panel does with each canonical RGB triple. Photo
-// the screen and tell me which label is rendering as which actual color.
-
-static void runColorTest() {
-    tft.fillScreen(0x0000);  // black per TFT_eSPI convention
-    tft.setTextColor(0xFFFF, 0x0000);  // white on black
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextSize(1);
-    tft.drawString("COLOR TEST - photo this then tap to dismiss", 4, 2);
-
-    struct CT { uint16_t rgb565; const char* label; };
-    auto pack = [](uint8_t r, uint8_t g, uint8_t b) -> uint16_t {
-        return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-    };
-
-    CT colors[8] = {
-        { pack(255,   0,   0), "1 RED"      },
-        { pack(  0, 255,   0), "2 GREEN"    },
-        { pack(  0,   0, 255), "3 BLUE"     },
-        { pack(255, 255, 255), "4 WHITE"    },
-        { pack(0x49,0xD9,0xD3),"5 TURQ"     },
-        { pack(0xEA,0xB3,0x08),"6 YELLOW"   },
-        { pack(0xA8,0x87,0xE0),"7 PURPLE"   },
-        { pack(0xEF,0x44,0x44),"8 RED2"     },
-    };
-
-    const int sqW = 75, sqH = 95;
-    const int gapX = 5, gapY = 8;
-    const int startX = 5, startY = 18;
-
-    for (int i = 0; i < 8; i++) {
-        int row = i / 4;
-        int col = i % 4;
-        int x = startX + col * (sqW + gapX);
-        int y = startY + row * (sqH + gapY);
-        tft.fillRect(x, y, sqW, sqH, colors[i].rgb565);
-        // Black label background just above the swatch so labels are
-        // readable regardless of how the swatch color renders.
-        tft.fillRect(x, y + sqH - 14, sqW, 14, 0x0000);
-        tft.setTextColor(0xFFFF, 0x0000);
-        tft.drawString(colors[i].label, x + 4, y + sqH - 12);
-    }
-
-    tft.drawString("Tap screen to continue", 4, 230);
-
-    // Wait for any touch instead of a timeout so the user has unlimited time
-    // to photograph the pattern.
-    while (true) {
-        if (ts.touched()) {
-            // Debounce - wait for release
-            while (ts.touched()) delay(20);
-            break;
-        }
-        delay(20);
     }
 }
 
@@ -1174,14 +1123,23 @@ static String maskWallet(const String& wallet) {
     return wallet.substring(0, 10) + "..." + wallet.substring(wallet.length() - 4);
 }
 
-// Format a log entry as "[Hh:mm:ss] message" for the on-device events list.
+// Format a log entry for the on-device events list. Uses wall-clock time
+// when NTP was synced at the moment of logging, falls back to uptime
+// (HH:MM:SS since boot) when not.
 static String formatLogLine(const LogEntry& e) {
-    unsigned long s = e.ts / 1000;
-    unsigned long h = s / 3600;
-    unsigned long m = (s / 60) % 60;
-    unsigned long ss = s % 60;
     char buf[96];
-    snprintf(buf, sizeof(buf), "[%02lu:%02lu:%02lu] %s", h, m, ss, e.msg);
+    if (e.epoch > 0) {
+        struct tm tm_local;
+        localtime_r(&e.epoch, &tm_local);
+        snprintf(buf, sizeof(buf), "[%02d:%02d:%02d] %s",
+                 tm_local.tm_hour, tm_local.tm_min, tm_local.tm_sec, e.msg);
+    } else {
+        unsigned long s = e.upMs / 1000;
+        unsigned long h = s / 3600;
+        unsigned long m = (s / 60) % 60;
+        unsigned long ss = s % 60;
+        snprintf(buf, sizeof(buf), "[+%02lu:%02lu:%02lu] %s", h, m, ss, e.msg);
+    }
     return String(buf);
 }
 
@@ -1342,6 +1300,35 @@ void saveConfig() {
     prefs.putString("worker", cfgWorker);
     prefs.end();
     Serial.println("[CFG] Saved");
+}
+
+// Lifetime share/block counters survive reboots so the device is more
+// satisfying as a long-running lottery miner. Deliberately not persisting
+// totalHashes - it changes thousands of times per second and would chew
+// through NVS flash wear in days.
+void loadStats() {
+    Preferences p;
+    p.begin("popminer", true);
+    sharesAccepted  = p.getUInt("shAccepted",  0);
+    sharesRejected  = p.getUInt("shRejected",  0);
+    sharesSubmitted = p.getUInt("shSubmitted", 0);
+    blocksFound     = p.getUInt("blocksFound", 0);
+    p.end();
+    Serial.printf("[STATS] Loaded lifetime: accepted=%u rejected=%u submitted=%u blocks=%u\n",
+                  (unsigned)sharesAccepted, (unsigned)sharesRejected,
+                  (unsigned)sharesSubmitted, (unsigned)blocksFound);
+}
+
+// Called whenever a counter increments. Shares come once every several
+// minutes at ~1 KH/s, so the write rate is negligible for NVS wear.
+void saveStats() {
+    Preferences p;
+    p.begin("popminer", false);
+    p.putUInt("shAccepted",  sharesAccepted);
+    p.putUInt("shRejected",  sharesRejected);
+    p.putUInt("shSubmitted", sharesSubmitted);
+    p.putUInt("blocksFound", blocksFound);
+    p.end();
 }
 
 // ============================================================================
@@ -1599,11 +1586,59 @@ static void handleApiConfigGet() {
     webServer.send(200, "application/json", out);
 }
 
+// Reject obviously bogus config values before they hit NVS so users get
+// useful feedback instead of a "won't connect to pool" mystery later.
 static void handleApiConfigPost() {
     if (!requireAuthJson()) return;
-    if (webServer.hasArg("pool"))   strncpy(cfgPool,   webServer.arg("pool").c_str(),   sizeof(cfgPool)   - 1);
-    if (webServer.hasArg("worker")) strncpy(cfgWorker, webServer.arg("worker").c_str(), sizeof(cfgWorker) - 1);
-    if (webServer.hasArg("wallet")) strncpy(cfgWallet, webServer.arg("wallet").c_str(), sizeof(cfgWallet) - 1);
+
+    String pool   = webServer.hasArg("pool")   ? webServer.arg("pool")   : String();
+    String worker = webServer.hasArg("worker") ? webServer.arg("worker") : String();
+    String wallet = webServer.hasArg("wallet") ? webServer.arg("wallet") : String();
+    pool.trim(); worker.trim(); wallet.trim();
+
+    auto reject = [&](const char* msg) {
+        String body = String("{\"ok\":false,\"error\":\"") + msg + "\"}";
+        webServer.send(400, "application/json", body);
+    };
+
+    // Pool: must be host:port. Tolerate a stratum+tcp:// prefix.
+    String poolCheck = pool;
+    if (poolCheck.startsWith("stratum+tcp://")) poolCheck = poolCheck.substring(14);
+    int colonAt = poolCheck.indexOf(':');
+    if (poolCheck.length() < 5 || colonAt < 1 || colonAt == (int)poolCheck.length() - 1) {
+        reject("Pool URL must be host:port (e.g. pool.proofofprints.com:5558)");
+        return;
+    }
+    int portVal = poolCheck.substring(colonAt + 1).toInt();
+    if (portVal <= 0 || portVal > 65535) {
+        reject("Pool port must be between 1 and 65535");
+        return;
+    }
+
+    // Wallet: Kaspa addresses always start with kaspa: (or kaspatest: for
+    // testnet). Length sanity check too.
+    if (!wallet.startsWith("kaspa:") && !wallet.startsWith("kaspatest:")) {
+        reject("Wallet must start with kaspa: (or kaspatest:)");
+        return;
+    }
+    if (wallet.length() < 20 || wallet.length() > 100) {
+        reject("Wallet address looks malformed (length out of range)");
+        return;
+    }
+
+    // Worker: any non-empty alphanumeric-ish string. Cap length.
+    if (worker.length() == 0) {
+        reject("Worker name required");
+        return;
+    }
+    if (worker.length() > 32) {
+        reject("Worker name too long (max 32 chars)");
+        return;
+    }
+
+    strncpy(cfgPool,   pool.c_str(),   sizeof(cfgPool)   - 1);
+    strncpy(cfgWorker, worker.c_str(), sizeof(cfgWorker) - 1);
+    strncpy(cfgWallet, wallet.c_str(), sizeof(cfgWallet) - 1);
     cfgPool[sizeof(cfgPool)-1]     = '\0';
     cfgWorker[sizeof(cfgWorker)-1] = '\0';
     cfgWallet[sizeof(cfgWallet)-1] = '\0';
@@ -1807,10 +1842,6 @@ void setup() {
     tft.invertDisplay(TFT_INVERT_COLORS);
     tft.fillScreen(TFT_BLACK);
 
-#if SHOW_COLOR_TEST
-    runColorTest();
-#endif
-
     // Touch init (separate VSPI bus) - match display rotation
     touchSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
     ts.begin(touchSPI);
@@ -1837,11 +1868,17 @@ void setup() {
     createUI();
     lv_timer_handler();
 
-    // Load saved config
+    // Load saved config + lifetime share/block counters
     loadConfig();
+    loadStats();
 
     // WiFi (blocks on first boot until user finishes captive portal)
     wifiSetupBlocking();
+
+    // Kick off NTP sync so event log timestamps show wall clock time.
+    // UTC, no DST. Three NTP servers for redundancy. Sync runs in
+    // background; addLog() falls back to uptime until first sync lands.
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
 
     // mDNS - unique hostname per device so multiple PoPMiner Nanos can
     // coexist on one LAN. Also publishes _popminer._tcp so PoPManager
@@ -1925,12 +1962,12 @@ void loop() {
         updateUI();
     }
 
-    // Mining state heartbeat once every 10 s. Use this to diagnose share-find:
-    //   target_msb=00..00 -> pool never sent mining.set_difficulty (no shares possible)
-    //   diff >= 1         -> at ~1 KH/s, shares take days/weeks (pool diff too high)
+    // Mining state heartbeat once a minute. Useful for diagnostics:
+    //   target_msb=00..00 -> pool never sent mining.set_difficulty
+    //   diff >= 1         -> at ~1 KH/s shares would take days/weeks
     //   diff < 0.01       -> shares should appear within a few minutes
     static unsigned long lastHeartbeat = 0;
-    if (millis() - lastHeartbeat >= 10000) {
+    if (millis() - lastHeartbeat >= 60000) {
         lastHeartbeat = millis();
         Serial.printf("[HEARTBEAT] mining=%d hasJob=%d pool=%d auth=%d hashrate=%.0f H/s "
                       "diff=%.6f jobs=%u sub=%u acc=%u rej=%u target_msb=%02x%02x%02x%02x\n",

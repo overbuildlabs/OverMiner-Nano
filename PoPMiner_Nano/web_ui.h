@@ -171,7 +171,21 @@ async function refresh(){try{
   document.getElementById("poolStatus").textContent=(d.pool_connected?"Pool connected":"Pool DISCONNECTED")+" • "+d.pool+" • jobs:"+d.jobs;
 }catch(e){}}
 async function loadConfig(){var r=await fetch("/api/config"),d=await r.json();document.getElementById("pool").value=d.pool;document.getElementById("worker").value=d.worker;document.getElementById("wallet").value=d.wallet}
-async function saveConfig(e){e.preventDefault();var data=new URLSearchParams();data.set("pool",document.getElementById("pool").value);data.set("worker",document.getElementById("worker").value);data.set("wallet",document.getElementById("wallet").value);var r=await fetch("/api/config",{method:"POST",body:data});if(r.ok){toast("Saved. Restarting…");setTimeout(function(){fetch("/api/restart",{method:"POST"})},800)}else toast("Save failed");return false}
+async function saveConfig(e){
+  e.preventDefault();
+  var data=new URLSearchParams();
+  data.set("pool",document.getElementById("pool").value.trim());
+  data.set("worker",document.getElementById("worker").value.trim());
+  data.set("wallet",document.getElementById("wallet").value.trim());
+  var r=await fetch("/api/config",{method:"POST",body:data});
+  if(r.ok){toast("Saved. Restarting…");setTimeout(function(){fetch("/api/restart",{method:"POST"})},800)}
+  else if(r.status===401){location.href="/login"}
+  else{
+    try{var d=await r.json();toast(d.error||"Save failed")}
+    catch(_){toast("Save failed (HTTP "+r.status+")")}
+  }
+  return false;
+}
 async function toggleMine(){await fetch("/api/mine",{method:"POST"});toast("Mining toggled");setTimeout(refresh,400)}
 async function restart(){if(!confirm("Restart device?"))return;await fetch("/api/restart",{method:"POST"});toast("Restarting…")}
 async function factoryReset(){if(!confirm("Factory reset wipes WiFi, wallet, pool, worker. Continue?"))return;await fetch("/api/factory_reset",{method:"POST"});toast("Reset. Rebooting to setup AP…")}
