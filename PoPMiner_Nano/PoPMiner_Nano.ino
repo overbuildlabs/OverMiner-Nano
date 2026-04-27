@@ -860,10 +860,10 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
     uint32_t h = (area->y2 - area->y1 + 1);
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
-    // LV_COLOR_16_SWAP=1 already stores bytes pre-swapped for the display,
-    // so pushColors must NOT swap again - that would double-swap and
-    // scramble RGB565 layout (turquoise -> magenta, navy -> cream, etc).
-    tft.pushColors((uint16_t*)&color_p->full, w * h, false);
+    // Standard LVGL+TFT_eSPI pairing: LV_COLOR_16_SWAP=1 + swap=true.
+    // The "swap" arg flips bytes-of-each-uint16 before sending so the wire
+    // matches what ILI9341 expects (MSB first) given LVGL's storage layout.
+    tft.pushColors((uint16_t*)&color_p->full, w * h, true);
     tft.endWrite();
     lv_disp_flush_ready(disp);
 }
