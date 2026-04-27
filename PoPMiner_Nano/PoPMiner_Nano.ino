@@ -12,7 +12,10 @@
  * ============================================================================
  * Board: ESP32 Dev Module
  *   Flash Size: 4MB (32Mb)
- *   Partition Scheme: Huge APP (3MB No OTA / 1MB SPIFFS)
+ *   Partition Scheme: Minimal SPIFFS (1.9MB APP with OTA / 190KB SPIFFS)
+ *     ^ Required for OTA. Sketch is ~1.3 MB so it fits comfortably.
+ *     If you don't need OTA, "Huge APP (3MB No OTA / 1MB SPIFFS)" works
+ *     too but blocks future firmware updates over WiFi.
  *   PSRAM: Disabled
  *   CPU Freq: 240MHz, Flash Freq: 80MHz, Flash Mode: QIO
  *
@@ -40,6 +43,8 @@
 #include <WiFiClient.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <ArduinoOTA.h>
+#include <Update.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <math.h>
@@ -175,6 +180,11 @@ char             mdnsHostname[24] = "popminer";  // filled in setup() with chip-
 
 String activeTokens[MAX_AUTH_SESSIONS];
 int    activeTokenCount = 0;
+
+// OTA upload state. The web upload arrives as multiple chunks via the
+// WebServer upload callback; we need to track auth/error state across them.
+bool otaAuthFailed   = false;
+bool otaInProgress   = false;
 
 // Event log ring buffer - shown on the device settings modal so users can
 // glance at recent activity (share accepted/rejected, pool connect/disconnect,
@@ -1636,6 +1646,112 @@ static void handleNotFound() {
     webServer.send(302, "text/plain", "");
 }
 
+// ----- OTA: web-upload firmware update -----
+//
+// The browser POSTs a multipart form with the .bin to /api/ota. Each chunk
+// arrives in handleOtaUpload(); we stream it through the Update library.
+// Once upload completes, handleOtaFinal() sends the response and reboots.
+
+static void handleOtaUpload() {
+    HTTPUpload& upload = webServer.upload();
+
+    if (upload.status == UPLOAD_FILE_START) {
+        otaAuthFailed = !isAuthed();
+        if (otaAuthFailed) {
+            Serial.println("[OTA] Unauthenticated upload rejected");
+            return;
+        }
+        Serial.printf("[OTA] Web upload starting: %s\n", upload.filename.c_str());
+        addLog("OTA upload starting");
+        // Stop mining so the hash loop isn't competing for SPI flash bandwidth
+        // and Update.write() has the CPU time it needs.
+        miningEnabled = false;
+        stopMiningTask();
+        if (stratumClient.connected()) stratumClient.stop();
+        otaInProgress = true;
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (otaAuthFailed || !otaInProgress) return;
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (otaAuthFailed || !otaInProgress) return;
+        if (Update.end(true)) {
+            Serial.printf("[OTA] Done. Total: %u bytes\n", upload.totalSize);
+            addLog("OTA upload OK");
+        } else {
+            Update.printError(Serial);
+            addLog("OTA write FAILED");
+        }
+        otaInProgress = false;
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        if (otaInProgress) {
+            Update.abort();
+            otaInProgress = false;
+            Serial.println("[OTA] Upload aborted");
+            addLog("OTA upload ABORTED");
+        }
+    }
+}
+
+static void handleOtaFinal() {
+    if (otaAuthFailed) {
+        otaAuthFailed = false;
+        webServer.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+        return;
+    }
+    if (Update.hasError()) {
+        webServer.send(500, "application/json", "{\"ok\":false,\"error\":\"update failed\"}");
+        return;
+    }
+    webServer.sendHeader("Connection", "close");
+    webServer.send(200, "application/json", "{\"ok\":true,\"message\":\"updated, rebooting\"}");
+    Serial.println("[OTA] Web update complete, rebooting in 800ms");
+    delay(800);
+    ESP.restart();
+}
+
+// ----- OTA: Arduino IDE network upload -----
+//
+// Lets the Arduino IDE upload over WiFi (the device shows up under
+// "Network ports" matching the mDNS hostname). Auth is the same web
+// password so we don't have a second secret to manage.
+
+static void setupArduinoOTA() {
+    ArduinoOTA.setHostname(mdnsHostname);
+    ArduinoOTA.setPassword(getDevicePassword().c_str());
+
+    ArduinoOTA.onStart([]() {
+        Serial.println("[OTA] Arduino IDE upload starting");
+        addLog("Arduino-OTA starting");
+        miningEnabled = false;
+        stopMiningTask();
+        if (stratumClient.connected()) stratumClient.stop();
+    });
+    ArduinoOTA.onEnd([]() {
+        Serial.println("[OTA] Arduino IDE upload complete");
+        addLog("Arduino-OTA OK");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        static unsigned int lastPct = 0;
+        unsigned int pct = (progress * 100) / total;
+        if (pct != lastPct && pct % 10 == 0) {
+            Serial.printf("[OTA] %u%%\n", pct);
+            lastPct = pct;
+        }
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("[OTA] Error %u\n", error);
+        addLog("Arduino-OTA error");
+    });
+    ArduinoOTA.begin();
+    Serial.printf("[OTA] Arduino IDE OTA ready as %s.local (use web password)\n",
+                  mdnsHostname);
+}
+
 void setupWebServer() {
     // We have to opt in to capturing Cookie/X-Auth-Token; WebServer drops
     // headers it isn't told to track.
@@ -1657,6 +1773,10 @@ void setupWebServer() {
     webServer.on("/api/restart",         HTTP_POST, handleApiRestart);
     webServer.on("/api/factory_reset",   HTTP_POST, handleApiFactoryReset);
     webServer.on("/api/change_password", HTTP_POST, handleChangePasswordPost);
+
+    // OTA firmware upload - two-callback registration: handleOtaFinal runs
+    // after upload completes; handleOtaUpload runs for each chunk.
+    webServer.on("/api/ota", HTTP_POST, handleOtaFinal, handleOtaUpload);
 
     webServer.onNotFound(handleNotFound);
     webServer.begin();
@@ -1749,6 +1869,9 @@ void setup() {
     // HTTP server with settings UI + remote-control endpoints
     setupWebServer();
 
+    // Arduino IDE network OTA (device shows up under IDE's Network ports)
+    setupArduinoOTA();
+
     // Try pool now if wallet is configured
     if (strlen(cfgWallet) > 0) {
         connectToPool();
@@ -1768,6 +1891,9 @@ void loop() {
 
     // Handle web UI requests (non-blocking poll)
     webServer.handleClient();
+
+    // Service Arduino IDE network OTA (no-op when no upload is in flight)
+    ArduinoOTA.handle();
 
     // Deferred actions from web UI (let HTTP response flush before doing them)
     if ((pendingRestart || pendingFactoryReset) && millis() >= pendingActionAt) {

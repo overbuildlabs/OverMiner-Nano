@@ -120,6 +120,22 @@ button{padding:11px 16px;border:0;border-radius:6px;font-weight:700;cursor:point
 </div>
 
 <div class="card">
+<h2>Firmware Update</h2>
+<p style="color:#9CA3AF;font-size:13px;margin:0 0 10px">Current: <span id="curFw" class="t" style="color:#49D9D3;font-weight:700">…</span> &middot; Compile a new build in Arduino IDE, export the .bin, then upload here.</p>
+<input type="file" id="fwFile" accept=".bin,.bin.gz" style="color:#fff;font-size:13px">
+<div style="margin-top:10px">
+<button class="btn-warn" onclick="uploadFirmware()">Upload &amp; Update</button>
+</div>
+<div id="otaProgress" style="display:none;margin-top:14px">
+<div style="background:#070B1E;border-radius:4px;height:8px;overflow:hidden;border:1px solid #1A1F3A">
+<div id="otaBar" style="height:100%;background:#49D9D3;width:0%;transition:width .15s"></div>
+</div>
+<p id="otaText" style="color:#9CA3AF;font-size:12px;margin:6px 0 0"></p>
+</div>
+<p style="color:#6B7280;font-size:11px;margin-top:10px">Or: in Arduino IDE select <code style="color:#9CA3AF">Tools &rarr; Port &rarr; Network ports &rarr; popminer-XXXX</code> to upload directly over WiFi.</p>
+</div>
+
+<div class="card">
 <h2>Account</h2>
 <details>
 <summary style="cursor:pointer;color:#9CA3AF;font-size:13px;margin-bottom:10px">Change password</summary>
@@ -142,6 +158,7 @@ async function refresh(){try{
   var r=await fetch("/api/stats"),d=await r.json();
   document.getElementById("ip").textContent=d.ip;
   document.getElementById("fw").textContent="FW "+d.fw;
+  var cfw=document.getElementById("curFw");if(cfw)cfw.textContent=d.fw;
   var pill=document.getElementById("pill");
   pill.textContent=d.mining?"MINING":"IDLE";
   pill.className="pill "+(d.mining?"on":"off");
@@ -159,6 +176,27 @@ async function saveConfig(e){e.preventDefault();var data=new URLSearchParams();d
 async function toggleMine(){await fetch("/api/mine",{method:"POST"});toast("Mining toggled");setTimeout(refresh,400)}
 async function restart(){if(!confirm("Restart device?"))return;await fetch("/api/restart",{method:"POST"});toast("Restarting…")}
 async function factoryReset(){if(!confirm("Factory reset wipes WiFi, wallet, pool, worker. Continue?"))return;await fetch("/api/factory_reset",{method:"POST"});toast("Reset. Rebooting to setup AP…")}
+function uploadFirmware(){
+  var f=document.getElementById("fwFile").files[0];
+  if(!f){toast("Pick a .bin first");return}
+  if(!confirm("Upload "+f.name+" ("+(f.size/1024).toFixed(0)+" KB)? Mining will stop and the device will reboot."))return;
+  var fd=new FormData();fd.append("firmware",f,f.name);
+  document.getElementById("otaProgress").style.display="block";
+  var bar=document.getElementById("otaBar"),txt=document.getElementById("otaText");
+  bar.style.width="0%";txt.textContent="Uploading…";
+  var xhr=new XMLHttpRequest();
+  xhr.open("POST","/api/ota");
+  xhr.upload.onprogress=function(e){
+    if(e.lengthComputable){var p=(e.loaded/e.total)*100;bar.style.width=p+"%";txt.textContent="Uploading "+Math.round(p)+"% ("+(e.loaded/1024).toFixed(0)+" / "+(e.total/1024).toFixed(0)+" KB)"}
+  };
+  xhr.onload=function(){
+    if(xhr.status===200){bar.style.width="100%";txt.textContent="Update applied. Device rebooting - reload in ~10s.";setTimeout(function(){location.href="/login"},10000)}
+    else if(xhr.status===401){location.href="/login"}
+    else{txt.textContent="Failed (HTTP "+xhr.status+"): "+xhr.responseText}
+  };
+  xhr.onerror=function(){txt.textContent="Network error during upload (the device may have already rebooted)"};
+  xhr.send(fd);
+}
 async function logout(){await fetch("/logout",{method:"POST"});location.href="/login"}
 async function changePassword(){
   var oldPwd=document.getElementById("oldPwd").value;
