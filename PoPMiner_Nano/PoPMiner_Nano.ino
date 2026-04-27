@@ -164,6 +164,18 @@ bool             pendingFactoryReset = false;
 unsigned long    pendingActionAt = 0;
 char             mdnsHostname[24] = "popminer";  // filled in setup() with chip-id suffix
 
+// ==================== WEB AUTH ====================
+// Single-password session-token auth, modeled on KASDeck's pattern.
+// Set WEB_AUTH_ENABLED to false on a fully-trusted home network if you want
+// to skip the login wall entirely.
+#define WEB_AUTH_ENABLED      true
+#define DEFAULT_WEB_PASSWORD  "kaspa123"
+#define MAX_AUTH_SESSIONS     5
+#define AUTH_TOKEN_LENGTH     32
+
+String activeTokens[MAX_AUTH_SESSIONS];
+int    activeTokenCount = 0;
+
 // Event log ring buffer - shown on the device settings modal so users can
 // glance at recent activity (share accepted/rejected, pool connect/disconnect,
 // auth events, etc.) without opening the web UI.
@@ -1366,7 +1378,155 @@ void wifiSetupBlocking() {
 // WEB SERVER (settings page, JSON stats, remote actions)
 // ============================================================================
 
+// ----- Auth helpers -----
+
+static String generateToken() {
+    static const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    String t;
+    t.reserve(AUTH_TOKEN_LENGTH);
+    for (int i = 0; i < AUTH_TOKEN_LENGTH; i++) {
+        t += charset[random(0, sizeof(charset) - 1)];
+    }
+    return t;
+}
+
+static String getDevicePassword() {
+    Preferences p;
+    p.begin("popminer", true);
+    String pwd = p.getString("webPassword", DEFAULT_WEB_PASSWORD);
+    p.end();
+    return pwd.length() > 0 ? pwd : String(DEFAULT_WEB_PASSWORD);
+}
+
+static void setDevicePassword(const String& pwd) {
+    Preferences p;
+    p.begin("popminer", false);
+    p.putString("webPassword", pwd);
+    p.end();
+}
+
+static bool isValidToken(const String& token) {
+    if (token.length() == 0) return false;
+    for (int i = 0; i < activeTokenCount; i++) {
+        if (activeTokens[i] == token) return true;
+    }
+    return false;
+}
+
+static void addSessionToken(const String& token) {
+    if (activeTokenCount < MAX_AUTH_SESSIONS) {
+        activeTokens[activeTokenCount++] = token;
+    } else {
+        // Evict oldest
+        for (int i = 0; i < MAX_AUTH_SESSIONS - 1; i++) activeTokens[i] = activeTokens[i + 1];
+        activeTokens[MAX_AUTH_SESSIONS - 1] = token;
+    }
+}
+
+static void removeSessionToken(const String& token) {
+    for (int i = 0; i < activeTokenCount; i++) {
+        if (activeTokens[i] == token) {
+            for (int j = i; j < activeTokenCount - 1; j++) activeTokens[j] = activeTokens[j + 1];
+            activeTokens[--activeTokenCount] = "";
+            return;
+        }
+    }
+}
+
+// Pull the auth token from either X-Auth-Token header or authToken cookie.
+static String extractAuthToken() {
+    if (webServer.hasHeader("X-Auth-Token")) {
+        return webServer.header("X-Auth-Token");
+    }
+    if (webServer.hasHeader("Cookie")) {
+        String cookies = webServer.header("Cookie");
+        int s = cookies.indexOf("authToken=");
+        if (s >= 0) {
+            s += 10;
+            int e = cookies.indexOf(";", s);
+            if (e < 0) e = cookies.length();
+            return cookies.substring(s, e);
+        }
+    }
+    return String();
+}
+
+static bool isAuthed() {
+#if !WEB_AUTH_ENABLED
+    return true;
+#endif
+    return isValidToken(extractAuthToken());
+}
+
+// Gate for HTML endpoints - redirects to /login if not authed.
+static bool requireAuthHtml() {
+    if (isAuthed()) return true;
+    webServer.sendHeader("Location", "/login", true);
+    webServer.send(302, "text/plain", "");
+    return false;
+}
+
+// Gate for JSON endpoints - returns 401 if not authed.
+static bool requireAuthJson() {
+    if (isAuthed()) return true;
+    webServer.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+    return false;
+}
+
+// ----- Login / logout handlers -----
+
+static void handleLoginGet() {
+    webServer.send_P(200, "text/html", LOGIN_HTML);
+}
+
+static void handleLoginPost() {
+    String pwd = webServer.hasArg("password") ? webServer.arg("password") : String();
+    if (pwd.length() == 0 || pwd != getDevicePassword()) {
+        // Wrong password - bounce back to /login with error flag
+        webServer.sendHeader("Location", "/login?err=1", true);
+        webServer.send(302, "text/plain", "");
+        return;
+    }
+    String token = generateToken();
+    addSessionToken(token);
+    // HttpOnly cookie, 30-day max-age
+    String cookie = "authToken=" + token + "; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax";
+    webServer.sendHeader("Set-Cookie", cookie);
+    webServer.sendHeader("Location", "/", true);
+    webServer.send(302, "text/plain", "");
+    Serial.println("[AUTH] Login success");
+}
+
+static void handleLogoutPost() {
+    String t = extractAuthToken();
+    if (t.length() > 0) removeSessionToken(t);
+    webServer.sendHeader("Set-Cookie", "authToken=; Path=/; Max-Age=0");
+    webServer.send(200, "application/json", "{\"ok\":true}");
+    Serial.println("[AUTH] Logout");
+}
+
+static void handleChangePasswordPost() {
+    if (!requireAuthJson()) return;
+    String oldPwd = webServer.hasArg("old") ? webServer.arg("old") : String();
+    String newPwd = webServer.hasArg("new") ? webServer.arg("new") : String();
+    if (oldPwd != getDevicePassword()) {
+        webServer.send(403, "application/json", "{\"ok\":false,\"error\":\"current password wrong\"}");
+        return;
+    }
+    if (newPwd.length() < 4) {
+        webServer.send(400, "application/json", "{\"ok\":false,\"error\":\"new password must be 4+ chars\"}");
+        return;
+    }
+    setDevicePassword(newPwd);
+    // Invalidate all existing sessions so other devices have to re-login
+    for (int i = 0; i < activeTokenCount; i++) activeTokens[i] = "";
+    activeTokenCount = 0;
+    Serial.println("[AUTH] Password changed - all sessions cleared");
+    webServer.send(200, "application/json", "{\"ok\":true,\"message\":\"password changed\"}");
+}
+
 static void handleRoot() {
+    if (!requireAuthHtml()) return;
     webServer.send_P(200, "text/html", WEB_UI_HTML);
 }
 
@@ -1412,6 +1572,7 @@ static void handleApiStats() {
 }
 
 static void handleApiConfigGet() {
+    if (!requireAuthJson()) return;
     StaticJsonDocument<512> doc;
     doc["pool"]   = cfgPool;
     doc["worker"] = cfgWorker;
@@ -1422,6 +1583,7 @@ static void handleApiConfigGet() {
 }
 
 static void handleApiConfigPost() {
+    if (!requireAuthJson()) return;
     if (webServer.hasArg("pool"))   strncpy(cfgPool,   webServer.arg("pool").c_str(),   sizeof(cfgPool)   - 1);
     if (webServer.hasArg("worker")) strncpy(cfgWorker, webServer.arg("worker").c_str(), sizeof(cfgWorker) - 1);
     if (webServer.hasArg("wallet")) strncpy(cfgWallet, webServer.arg("wallet").c_str(), sizeof(cfgWallet) - 1);
@@ -1434,6 +1596,7 @@ static void handleApiConfigPost() {
 }
 
 static void handleApiMineToggle() {
+    if (!requireAuthJson()) return;
     if (strlen(cfgWallet) == 0) {
         webServer.send(400, "application/json", "{\"ok\":false,\"error\":\"wallet not set\"}");
         return;
@@ -1453,14 +1616,15 @@ static void handleApiMineToggle() {
 }
 
 static void handleApiRestart() {
+    if (!requireAuthJson()) return;
     Serial.println("[WEB] Restart requested via web UI");
     webServer.send(200, "application/json", "{\"ok\":true}");
-    // Defer the actual restart so the response can flush
     pendingRestart = true;
     pendingActionAt = millis() + 500;
 }
 
 static void handleApiFactoryReset() {
+    if (!requireAuthJson()) return;
     Serial.println("[WEB] Factory reset requested via web UI");
     webServer.send(200, "application/json", "{\"ok\":true}");
     pendingFactoryReset = true;
@@ -1473,18 +1637,34 @@ static void handleNotFound() {
 }
 
 void setupWebServer() {
+    // We have to opt in to capturing Cookie/X-Auth-Token; WebServer drops
+    // headers it isn't told to track.
+    const char *trackHeaders[] = { "Cookie", "X-Auth-Token" };
+    webServer.collectHeaders(trackHeaders, sizeof(trackHeaders) / sizeof(trackHeaders[0]));
+
+    // Public endpoints
+    webServer.on("/login",               HTTP_GET,  handleLoginGet);
+    webServer.on("/login",               HTTP_POST, handleLoginPost);
+    webServer.on("/logout",              HTTP_POST, handleLogoutPost);
+    webServer.on("/api/info",            HTTP_GET,  handleApiInfo);   // public for PoPManager
+    webServer.on("/api/stats",           HTTP_GET,  handleApiStats);  // public for PoPManager
+
+    // Protected endpoints (handler does the gating)
     webServer.on("/",                    HTTP_GET,  handleRoot);
-    webServer.on("/api/info",            HTTP_GET,  handleApiInfo);
-    webServer.on("/api/stats",           HTTP_GET,  handleApiStats);
     webServer.on("/api/config",          HTTP_GET,  handleApiConfigGet);
     webServer.on("/api/config",          HTTP_POST, handleApiConfigPost);
     webServer.on("/api/mine",            HTTP_POST, handleApiMineToggle);
     webServer.on("/api/restart",         HTTP_POST, handleApiRestart);
     webServer.on("/api/factory_reset",   HTTP_POST, handleApiFactoryReset);
+    webServer.on("/api/change_password", HTTP_POST, handleChangePasswordPost);
+
     webServer.onNotFound(handleNotFound);
     webServer.begin();
     Serial.printf("[WEB] HTTP server up at http://%s/  (and http://%s.local/)\n",
                   WiFi.localIP().toString().c_str(), mdnsHostname);
+#if WEB_AUTH_ENABLED
+    Serial.println("[AUTH] Web UI requires login. Default password: kaspa123");
+#endif
 }
 
 // ============================================================================
@@ -1498,6 +1678,10 @@ void setup() {
 
     miningStateMutex = xSemaphoreCreateMutex();
     logMutex = xSemaphoreCreateMutex();
+
+    // Seed Arduino's PRNG so generated session tokens differ across boots.
+    // esp_random() is the hardware TRNG; we just need one good seed.
+    randomSeed(esp_random());
 
     // Display init - rotation 1 = landscape, USB on left
     tft.begin();

@@ -4,6 +4,52 @@
 
 #pragma once
 
+// ----- Login page -----
+// Submitted with x-www-form-urlencoded password field. The .ino sets the
+// authToken cookie on success. ?err=1 in the URL flips the error message on.
+static const char LOGIN_HTML[] PROGMEM = R"rawhtml(<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PoPMiner Nano - Login</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:#070B1E;color:#fff;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+.box{width:100%;max-width:340px;background:#1A1F3A;border:1px solid #49D9D3;border-radius:8px;padding:24px}
+h1{color:#49D9D3;margin:0 0 4px;font-size:22px;letter-spacing:.5px}
+.sub{color:#6B7280;margin:0 0 18px;font-size:13px}
+label{display:block;font-size:11px;color:#6B7280;margin:10px 0 4px;text-transform:uppercase;letter-spacing:1px}
+input[type=password]{width:100%;padding:10px;background:#070B1E;border:1px solid #1A1F3A;border-radius:4px;color:#fff;font-family:ui-monospace,monospace;font-size:14px}
+input:focus{outline:none;border-color:#49D9D3}
+button{width:100%;padding:11px;border:0;border-radius:6px;font-weight:700;cursor:pointer;background:#49D9D3;color:#070B1E;margin-top:14px;font-size:14px;letter-spacing:.5px}
+.err{color:#EF4444;font-size:12px;margin-top:10px;min-height:1em}
+.hint{color:#6B7280;font-size:11px;margin-top:14px;text-align:center}
+</style>
+</head>
+<body>
+<div class="box">
+<h1>PoPMiner Nano</h1>
+<p class="sub">Enter password to access settings</p>
+<form method="POST" action="/login">
+<label>Password</label>
+<input type="password" name="password" autofocus required>
+<button type="submit">Sign In</button>
+<div class="err" id="err"></div>
+</form>
+<p class="hint">Default password: kaspa123</p>
+</div>
+<script>
+if (location.search.indexOf("err=1") >= 0) {
+  document.getElementById("err").textContent = "Wrong password.";
+}
+</script>
+</body>
+</html>
+)rawhtml";
+
+
+
 static const char WEB_UI_HTML[] PROGMEM = R"rawhtml(<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -72,6 +118,19 @@ button{padding:11px 16px;border:0;border-radius:6px;font-weight:700;cursor:point
 <button class="btn-warn" onclick="restart()">Restart</button>
 <button class="btn-stop" onclick="factoryReset()">Factory Reset</button>
 </div>
+
+<div class="card">
+<h2>Account</h2>
+<details>
+<summary style="cursor:pointer;color:#9CA3AF;font-size:13px;margin-bottom:10px">Change password</summary>
+<label>Current password</label>
+<input type="password" id="oldPwd">
+<label>New password (4+ chars)</label>
+<input type="password" id="newPwd">
+<button class="btn-go" onclick="changePassword()" style="margin-top:10px">Update Password</button>
+</details>
+<button class="btn-warn" onclick="logout()" style="margin-top:14px">Sign Out</button>
+</div>
 </div>
 
 <div id="toast" class="toast"></div>
@@ -100,6 +159,22 @@ async function saveConfig(e){e.preventDefault();var data=new URLSearchParams();d
 async function toggleMine(){await fetch("/api/mine",{method:"POST"});toast("Mining toggled");setTimeout(refresh,400)}
 async function restart(){if(!confirm("Restart device?"))return;await fetch("/api/restart",{method:"POST"});toast("Restarting…")}
 async function factoryReset(){if(!confirm("Factory reset wipes WiFi, wallet, pool, worker. Continue?"))return;await fetch("/api/factory_reset",{method:"POST"});toast("Reset. Rebooting to setup AP…")}
+async function logout(){await fetch("/logout",{method:"POST"});location.href="/login"}
+async function changePassword(){
+  var oldPwd=document.getElementById("oldPwd").value;
+  var newPwd=document.getElementById("newPwd").value;
+  if(!oldPwd||!newPwd){toast("Fill both fields");return}
+  var data=new URLSearchParams();data.set("old",oldPwd);data.set("new",newPwd);
+  var r=await fetch("/api/change_password",{method:"POST",body:data});
+  if(r.ok){toast("Password changed - signing out");setTimeout(function(){location.href="/login"},1200)}
+  else{var d=await r.json();toast(d.error||"Change failed")}
+}
+// Redirect to /login on any 401 from auth-gated calls
+async function safeFetch(url, opts){
+  var r = await fetch(url, opts);
+  if (r.status === 401) { location.href = "/login"; throw new Error("auth"); }
+  return r;
+}
 loadConfig();refresh();setInterval(refresh,2000);
 </script>
 </body>
