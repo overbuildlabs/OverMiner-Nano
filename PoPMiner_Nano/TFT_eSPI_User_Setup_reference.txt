@@ -1,0 +1,64 @@
+// ============================================================================
+// User_Setup.h - TFT_eSPI configuration for ESP32-2432S028R (CYD)
+// ============================================================================
+//
+// >>> COPY THIS FILE INTO THE TFT_eSPI LIBRARY FOLDER, OVERWRITING THE EXISTING
+// >>> User_Setup.h. Typical path on Windows:
+// >>>   C:\Users\<you>\Documents\Arduino\libraries\TFT_eSPI\User_Setup.h
+// >>>
+// >>> This is required because TFT_eSPI loads its config from inside the
+// >>> library folder, NOT from the sketch folder. After copying, restart the
+// >>> Arduino IDE so the new config is picked up by the build system.
+// >>>
+// >>> If you already have a customized User_Setup.h for another project, you
+// >>> can use User_Setup_Select.h to switch between configs - see TFT_eSPI docs.
+// ============================================================================
+
+#define USER_SETUP_INFO "PoPMiner_Nano_CYD"
+
+// ----- Driver -----
+// CYDs ship in two color-order variants. SYMPTOM that you have the WRONG one:
+// brand turquoise (#49D9D3) renders as olive/yellow-green, and dark navy
+// looks brownish/washed-out. Swap which line is commented to fix:
+#define ILI9341_DRIVER            // <-- start here
+//#define ILI9341_2_DRIVER        // <-- if turquoise still looks yellow, use this instead
+
+// Backup color-order knob. If still wrong after switching the driver,
+// flip this between TFT_BGR and TFT_RGB:
+#define TFT_RGB_ORDER TFT_BGR
+
+// ----- Resolution -----
+#define TFT_WIDTH  240
+#define TFT_HEIGHT 320
+
+// ----- Display SPI pins (HSPI on ESP32) -----
+#define TFT_MISO 12
+#define TFT_MOSI 13
+#define TFT_SCLK 14
+#define TFT_CS   15
+#define TFT_DC    2
+#define TFT_RST  -1     // Tied to ESP32 EN; no separate reset pin
+
+// ----- Backlight (controlled by TFT_eSPI on demand; we leave on) -----
+#define TFT_BL   21
+#define TFT_BACKLIGHT_ON HIGH
+
+// ----- Touch (XPT2046) -----
+// IMPORTANT: TFT_eSPI's built-in touch driver is NOT used here.
+// We drive XPT2046 on a separate SPI bus (VSPI) using the
+// XPT2046_Touchscreen library. Do NOT define TOUCH_CS - leave it commented:
+//#define TOUCH_CS 33
+
+// ----- Fonts (we use LVGL fonts, but TFT_eSPI needs at least one font) -----
+#define LOAD_GLCD
+#define LOAD_FONT2
+#define SMOOTH_FONT
+
+// ----- SPI clock speed -----
+#define SPI_FREQUENCY       55000000   // 55 MHz - works reliably on CYD
+#define SPI_READ_FREQUENCY  20000000
+#define SPI_TOUCH_FREQUENCY  2500000
+
+// ----- ESP32 SPI port assignment -----
+// Display goes on HSPI; XPT2046 touch is driven separately on VSPI in our sketch.
+#define USE_HSPI_PORT

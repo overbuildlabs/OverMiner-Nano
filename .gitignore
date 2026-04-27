@@ -1,0 +1,23 @@
+# Claude Code per-user settings
+.claude/settings.local.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Arduino build artifacts (Arduino IDE puts these in AppData, but just in case)
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Python
+__pycache__/
+*.pyc
