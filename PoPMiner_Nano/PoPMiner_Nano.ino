@@ -43,7 +43,6 @@
 #include <WiFiClient.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
-#include <ArduinoOTA.h>
 #include <Update.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -60,7 +59,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.1.2"
+#define FW_VERSION         "0.1.3"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"
@@ -1660,39 +1659,9 @@ static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
     return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 }
 
-// Full-screen "FIRMWARE UPDATE - DO NOT UNPLUG" takeover. Called when OTA
-// begins (either source). Disables LVGL repaint via otaInProgress so this
-// stays on screen until reboot. The progress bar is updated by callers when
-// a percentage is available (ArduinoOTA gives us one; web upload doesn't
-// know total size, so it just leaves the bar at 0%).
-static int otaProgressLastPct = -1;
-
-static void drawOtaProgressBar(uint8_t pct) {
-    if (otaProgressLastPct == pct) return;
-    otaProgressLastPct = pct;
-    const int barX = 30, barY = 165, barW = SCREEN_W - 60, barH = 14;
-    // Outer frame (drawn once is fine, but cheap to repaint)
-    tft.drawRect(barX, barY, barW, barH, rgb565(0x49, 0xD9, 0xD3));
-    // Fill inside
-    int fillW = (barW - 2) * pct / 100;
-    tft.fillRect(barX + 1, barY + 1, fillW,            barH - 2, rgb565(0x49, 0xD9, 0xD3));
-    tft.fillRect(barX + 1 + fillW, barY + 1, barW - 2 - fillW, barH - 2, 0x0000);
-    // % text below
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%u%%", pct);
-    tft.fillRect(barX, barY + barH + 4, barW, 16, 0x0000);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(rgb565(0x9C, 0xA3, 0xAF), 0x0000);
-    tft.setTextSize(1);
-    tft.drawString(buf, SCREEN_W / 2, barY + barH + 10);
-}
-
-// Drawn when OTA begins. `showBar` controls whether a progress bar is
-// rendered - we only show it when the caller has a real percentage feed
-// (ArduinoOTA does, web upload doesn't). For web uploads the browser
-// shows its own progress, so a stuck-at-0% bar on the device would be
-// misleading.
-static void showOtaScreen(const char* method, bool showBar) {
+// Drawn when OTA begins. Browser shows its own progress bar during the
+// upload so we just show a static "DO NOT UNPLUG" takeover here.
+static void showOtaScreen() {
     otaInProgress = true;
     delay(40);  // let any in-flight LVGL frame finish
 
@@ -1702,21 +1671,15 @@ static void showOtaScreen(const char* method, bool showBar) {
 
     tft.setTextSize(2);
     tft.setTextColor(rgb565(0x49, 0xD9, 0xD3), 0x0000);
-    tft.drawString("FIRMWARE UPDATE", SCREEN_W / 2, 50);
+    tft.drawString("FIRMWARE UPDATE", SCREEN_W / 2, 70);
 
     tft.setTextSize(2);
     tft.setTextColor(rgb565(0xEF, 0x44, 0x44), 0x0000);
-    tft.drawString("DO NOT UNPLUG", SCREEN_W / 2, 90);
+    tft.drawString("DO NOT UNPLUG", SCREEN_W / 2, 115);
 
     tft.setTextSize(1);
     tft.setTextColor(rgb565(0x9C, 0xA3, 0xAF), 0x0000);
-    tft.drawString(method, SCREEN_W / 2, 130);
-    tft.drawString("Device will reboot when done", SCREEN_W / 2, 215);
-
-    if (showBar) {
-        otaProgressLastPct = -1;
-        drawOtaProgressBar(0);
-    }
+    tft.drawString("Device will reboot when done", SCREEN_W / 2, 165);
 }
 
 // ----- OTA: web-upload firmware update -----
@@ -1741,7 +1704,7 @@ static void handleOtaUpload() {
         miningEnabled = false;
         stopMiningTask();
         if (stratumClient.connected()) stratumClient.stop();
-        showOtaScreen("via web upload", false);  // no bar - browser shows progress
+        showOtaScreen();
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
             Update.printError(Serial);
         }
@@ -1785,47 +1748,6 @@ static void handleOtaFinal() {
     Serial.println("[OTA] Web update complete, rebooting in 800ms");
     delay(800);
     ESP.restart();
-}
-
-// ----- OTA: Arduino IDE network upload -----
-//
-// Lets the Arduino IDE upload over WiFi (the device shows up under
-// "Network ports" matching the mDNS hostname). Auth is the same web
-// password so we don't have a second secret to manage.
-
-static void setupArduinoOTA() {
-    ArduinoOTA.setHostname(mdnsHostname);
-    ArduinoOTA.setPassword(getDevicePassword().c_str());
-
-    ArduinoOTA.onStart([]() {
-        Serial.println("[OTA] Arduino IDE upload starting");
-        addLog("Arduino-OTA starting");
-        miningEnabled = false;
-        stopMiningTask();
-        if (stratumClient.connected()) stratumClient.stop();
-        showOtaScreen("via Arduino IDE", true);  // bar fed by onProgress
-    });
-    ArduinoOTA.onEnd([]() {
-        Serial.println("[OTA] Arduino IDE upload complete");
-        addLog("Arduino-OTA OK");
-        drawOtaProgressBar(100);
-    });
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        unsigned int pct = (progress * 100) / total;
-        drawOtaProgressBar((uint8_t)pct);
-        static unsigned int lastSerialPct = 0;
-        if (pct != lastSerialPct && pct % 10 == 0) {
-            Serial.printf("[OTA] %u%%\n", pct);
-            lastSerialPct = pct;
-        }
-    });
-    ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("[OTA] Error %u\n", error);
-        addLog("Arduino-OTA error");
-    });
-    ArduinoOTA.begin();
-    Serial.printf("[OTA] Arduino IDE OTA ready as %s.local (use web password)\n",
-                  mdnsHostname);
 }
 
 void setupWebServer() {
@@ -1921,32 +1843,26 @@ void setup() {
     // WiFi (blocks on first boot until user finishes captive portal)
     wifiSetupBlocking();
 
-    // Compute unique mDNS hostname so multiple PoPMiner Nanos coexist on one
-    // LAN: popminer-XXXX where XXXX is the low 16 bits of the chip MAC.
+    // mDNS - unique hostname per device so multiple PoPMiner Nanos can
+    // coexist on one LAN. Also publishes _popminer._tcp so PoPManager
+    // (or any mDNS scanner) can discover all devices in one query.
     {
         uint64_t mac = ESP.getEfuseMac();
         snprintf(mdnsHostname, sizeof(mdnsHostname), "popminer-%04x",
                  (uint16_t)(mac & 0xFFFF));
     }
-
-    // ORDER MATTERS: ArduinoOTA.begin() calls MDNS.begin() internally. If
-    // MDNS is already running, that internal call returns early and the
-    // _arduino._tcp service never gets registered - meaning the device
-    // won't appear under Arduino IDE's Network ports. So bring up
-    // ArduinoOTA FIRST (it starts mDNS + registers _arduino._tcp + opens
-    // the OTA TCP listener on 3232), then layer our other services on top.
-    setupArduinoOTA();
-
-    // Add HTTP and PoPManager-discovery services on top of the already-
-    // running mDNS responder.
-    MDNS.addService("http", "tcp", 80);
-    MDNS.addService("popminer", "tcp", 80);
-    MDNS.addServiceTxt("popminer", "tcp", "fw", FW_VERSION);
-    MDNS.addServiceTxt("popminer", "tcp", "model", "esp32-cyd");
-    MDNS.addServiceTxt("popminer", "tcp", "name", "PoPMiner Nano");
-    MDNS.addServiceTxt("popminer", "tcp", "host", (const char*)mdnsHostname);
-    Serial.printf("[mDNS] %s.local with _arduino._tcp + _http._tcp + _popminer._tcp\n",
-                  mdnsHostname);
+    if (MDNS.begin(mdnsHostname)) {
+        MDNS.addService("http", "tcp", 80);
+        MDNS.addService("popminer", "tcp", 80);
+        MDNS.addServiceTxt("popminer", "tcp", "fw", FW_VERSION);
+        MDNS.addServiceTxt("popminer", "tcp", "model", "esp32-cyd");
+        MDNS.addServiceTxt("popminer", "tcp", "name", "PoPMiner Nano");
+        MDNS.addServiceTxt("popminer", "tcp", "host", (const char*)mdnsHostname);
+        Serial.printf("[mDNS] %s.local registered, _popminer._tcp announced\n",
+                      mdnsHostname);
+    } else {
+        Serial.println("[mDNS] failed to start (non-fatal)");
+    }
 
     // HTTP server with settings UI + remote-control endpoints
     setupWebServer();
@@ -1975,9 +1891,6 @@ void loop() {
 
     // Handle web UI requests (non-blocking poll)
     webServer.handleClient();
-
-    // Service Arduino IDE network OTA (no-op when no upload is in flight)
-    ArduinoOTA.handle();
 
     // Deferred actions from web UI (let HTTP response flush before doing them)
     if ((pendingRestart || pendingFactoryReset) && millis() >= pendingActionAt) {
