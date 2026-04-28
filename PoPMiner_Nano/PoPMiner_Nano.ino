@@ -60,7 +60,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.2.2"
+#define FW_VERSION         "0.2.3"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"

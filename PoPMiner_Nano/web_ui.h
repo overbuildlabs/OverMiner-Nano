@@ -222,6 +222,14 @@ async function refresh(){try{
   document.getElementById("poolStatus").textContent=(d.pool_connected?"Pool connected":"Pool DISCONNECTED")+" • "+d.pool+" • jobs:"+d.jobs;
 }catch(e){}}
 async function loadConfig(){var r=await fetch("/api/config"),d=await r.json();document.getElementById("pool").value=d.pool;document.getElementById("worker").value=d.worker;document.getElementById("wallet").value=d.wallet}
+// Helper: clear our auth cookie + bounce to /login. Used after any action
+// that reboots the device, since session tokens are RAM-only and don't
+// survive a restart.
+function ppLogoutAndLogin(delayMs){
+  document.cookie="authToken=; Path=/; Max-Age=0; SameSite=Lax";
+  setTimeout(function(){location.href="/login"},delayMs||10000);
+}
+
 async function saveConfig(e){
   e.preventDefault();
   var data=new URLSearchParams();
@@ -229,7 +237,11 @@ async function saveConfig(e){
   data.set("worker",document.getElementById("worker").value.trim());
   data.set("wallet",document.getElementById("wallet").value.trim());
   var r=await fetch("/api/config",{method:"POST",body:data});
-  if(r.ok){toast("Saved. Restarting…");setTimeout(function(){fetch("/api/restart",{method:"POST"})},800)}
+  if(r.ok){
+    toast("Saved. Rebooting and signing you out…");
+    setTimeout(function(){fetch("/api/restart",{method:"POST"})},800);
+    ppLogoutAndLogin(10000);
+  }
   else if(r.status===401){location.href="/login"}
   else{
     try{var d=await r.json();toast(d.error||"Save failed")}
@@ -238,7 +250,12 @@ async function saveConfig(e){
   return false;
 }
 async function toggleMine(){await fetch("/api/mine",{method:"POST"});toast("Mining toggled");setTimeout(refresh,400)}
-async function restart(){if(!confirm("Restart device?"))return;await fetch("/api/restart",{method:"POST"});toast("Restarting…")}
+async function restart(){
+  if(!confirm("Restart device? You'll be signed out and the device will be unreachable for ~10 seconds."))return;
+  await fetch("/api/restart",{method:"POST"});
+  toast("Rebooting and signing you out…");
+  ppLogoutAndLogin(10000);
+}
 async function factoryReset(){if(!confirm("Factory reset wipes WiFi, wallet, pool, worker. Continue?"))return;await fetch("/api/factory_reset",{method:"POST"});toast("Reset. Rebooting to setup AP…")}
 function uploadFirmware(){
   var f=document.getElementById("fwFile").files[0];
