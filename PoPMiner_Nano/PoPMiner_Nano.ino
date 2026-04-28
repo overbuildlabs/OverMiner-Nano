@@ -60,7 +60,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.2.3"
+#define FW_VERSION         "0.2.4"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"
@@ -1108,13 +1108,84 @@ void mine_btn_event_cb(lv_event_t *e) {
     prefs.end();
 }
 
-static void reset_confirm_cb(lv_event_t *e) {
-    factory_reset_now();
-}
-
+// Generic "close this modal" handler used by the settings X button and the
+// confirm dialog's Cancel button. The modal-to-close is passed as user_data
+// when the callback is registered so we can reuse this for any modal.
 static void reset_cancel_cb(lv_event_t *e) {
     lv_obj_t *modal = (lv_obj_t*)lv_event_get_user_data(e);
-    lv_obj_del(modal);
+    if (modal) lv_obj_del(modal);
+}
+
+// Final step - actually wipe and reboot. Reached only after the user taps
+// "Yes, Erase" on the confirmation dialog.
+static void factory_reset_apply_cb(lv_event_t *e) {
+    factory_reset_now();  // wipes NVS + WiFi creds + ESP.restart()
+}
+
+// First step - shown when the user taps FACTORY RESET in the settings modal.
+// Builds an "Are you sure?" dialog on top of the existing settings modal so a
+// stray tap doesn't immediately nuke the device's config.
+static void reset_confirm_cb(lv_event_t *e) {
+    lv_obj_t *confirm = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(confirm, SCREEN_W, SCREEN_H);
+    lv_obj_set_pos(confirm, 0, 0);
+    lv_obj_set_style_bg_color(confirm, lv_color_hex(COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(confirm, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(confirm, 0, 0);
+    lv_obj_set_style_pad_all(confirm, 0, 0);
+    lv_obj_clear_flag(confirm, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *box = lv_obj_create(confirm);
+    lv_obj_set_size(box, 280, 170);
+    lv_obj_center(box);
+    lv_obj_set_style_bg_color(box, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_set_style_border_color(box, lv_color_hex(COLOR_STOP), 0);
+    lv_obj_set_style_border_width(box, 2, 0);
+    lv_obj_set_style_radius(box, 8, 0);
+    lv_obj_set_style_pad_all(box, 12, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(box);
+    lv_label_set_text(title, "FACTORY RESET");
+    lv_obj_set_style_text_color(title, lv_color_hex(COLOR_STOP), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t *body = lv_label_create(box);
+    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(body, 250);
+    lv_label_set_text(body, "This will erase your device to factory.\nWiFi, wallet, pool, and worker will be wiped. Are you sure?");
+    lv_obj_set_style_text_color(body, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(body, &lv_font_montserrat_14, 0);
+    lv_obj_align(body, LV_ALIGN_TOP_MID, 0, 28);
+
+    // Yes (red) - applies the reset
+    lv_obj_t *btnYes = lv_btn_create(box);
+    lv_obj_set_size(btnYes, 120, 38);
+    lv_obj_align(btnYes, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(btnYes, lv_color_hex(COLOR_STOP), 0);
+    lv_obj_set_style_border_width(btnYes, 0, 0);
+    lv_obj_set_style_radius(btnYes, 6, 0);
+    lv_obj_t *yLbl = lv_label_create(btnYes);
+    lv_label_set_text(yLbl, "Yes, Erase");
+    lv_obj_set_style_text_color(yLbl, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(yLbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(yLbl);
+    lv_obj_add_event_cb(btnYes, factory_reset_apply_cb, LV_EVENT_CLICKED, NULL);
+
+    // No (gray) - just dismiss the confirm dialog and stay in settings
+    lv_obj_t *btnNo = lv_btn_create(box);
+    lv_obj_set_size(btnNo, 120, 38);
+    lv_obj_align(btnNo, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(btnNo, lv_color_hex(COLOR_DIM), 0);
+    lv_obj_set_style_border_width(btnNo, 0, 0);
+    lv_obj_set_style_radius(btnNo, 6, 0);
+    lv_obj_t *nLbl = lv_label_create(btnNo);
+    lv_label_set_text(nLbl, "Cancel");
+    lv_obj_set_style_text_color(nLbl, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(nLbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(nLbl);
+    lv_obj_add_event_cb(btnNo, reset_cancel_cb, LV_EVENT_CLICKED, confirm);
 }
 
 // Mask wallet so the modal doesn't shoulder-surf the full address.
