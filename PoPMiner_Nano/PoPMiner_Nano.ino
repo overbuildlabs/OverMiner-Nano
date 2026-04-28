@@ -60,7 +60,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.2.1"
+#define FW_VERSION         "0.2.2"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"
@@ -1724,6 +1724,50 @@ static void showOtaScreen() {
     tft.drawString("Device will reboot when done", SCREEN_W / 2, 165);
 }
 
+// First-boot / post-factory-reset setup screen drawn directly via TFT_eSPI
+// (no LVGL). Shows the AP SSID + password and what to do next, instead of
+// painting the main mining UI which would be non-functional without config.
+static void showSetupScreen() {
+    tft.fillScreen(0x0000);
+
+    tft.setTextDatum(MC_DATUM);
+
+    tft.setTextSize(2);
+    tft.setTextColor(rgb565(0x49, 0xD9, 0xD3), 0x0000);
+    tft.drawString("PoPMiner Nano", SCREEN_W / 2, 18);
+
+    tft.setTextSize(1);
+    tft.setTextColor(rgb565(0x9C, 0xA3, 0xAF), 0x0000);
+    tft.drawString("FIRST-TIME SETUP", SCREEN_W / 2, 40);
+
+    // Card-style box with AP creds.
+    int boxX = 16, boxY = 60, boxW = SCREEN_W - 32, boxH = 100;
+    tft.drawRoundRect(boxX, boxY, boxW, boxH, 8, rgb565(0x49, 0xD9, 0xD3));
+
+    tft.setTextSize(1);
+    tft.setTextColor(rgb565(0x6B, 0x72, 0x80), 0x0000);
+    tft.drawString("Connect phone or laptop to WiFi:", SCREEN_W / 2, boxY + 14);
+
+    tft.setTextSize(2);
+    tft.setTextColor(rgb565(0x49, 0xD9, 0xD3), 0x0000);
+    tft.drawString(AP_NAME, SCREEN_W / 2, boxY + 38);
+
+    tft.setTextSize(1);
+    tft.setTextColor(rgb565(0x6B, 0x72, 0x80), 0x0000);
+    tft.drawString("Password:", SCREEN_W / 2, boxY + 64);
+    tft.setTextSize(2);
+    tft.setTextColor(rgb565(0xEA, 0xB3, 0x08), 0x0000);
+    tft.drawString(AP_PASSWORD, SCREEN_W / 2, boxY + 84);
+
+    tft.setTextSize(1);
+    tft.setTextColor(rgb565(0x9C, 0xA3, 0xAF), 0x0000);
+    tft.drawString("Captive portal will open automatically", SCREEN_W / 2, 178);
+    tft.drawString("Enter WiFi + Kaspa wallet + pool", SCREEN_W / 2, 195);
+
+    tft.setTextColor(rgb565(0x49, 0xD9, 0xD3), 0x0000);
+    tft.drawString("Waiting for setup...", SCREEN_W / 2, 222);
+}
+
 // ----- OTA: web-upload firmware update -----
 //
 // The browser POSTs a multipart form with the .bin to /api/ota. Each chunk
@@ -1872,15 +1916,36 @@ void setup() {
     indev_drv.read_cb = my_touchpad_read;
     lv_indev_drv_register(&indev_drv);
 
-    createUI();
-    lv_timer_handler();
-
     // Load saved config + lifetime share/block counters
     loadConfig();
     loadStats();
 
+    // Decide what to show during WiFi setup. If we have saved creds the
+    // device is just reconnecting to a known network and the main UI is
+    // appropriate. If creds are missing (fresh boot or post-factory-reset)
+    // the main UI would be non-functional and confusing - show a dedicated
+    // "connect to AP and configure me" screen instead.
+    WiFi.mode(WIFI_STA);
+    delay(50);
+    bool hasWifiSaved = (WiFi.SSID().length() > 0);
+
+    if (hasWifiSaved) {
+        createUI();
+        lv_timer_handler();
+    } else {
+        Serial.println("[BOOT] No saved WiFi - showing setup screen");
+        showSetupScreen();
+        // Skip LVGL render so the direct-TFT setup screen stays put.
+    }
+
     // WiFi (blocks on first boot until user finishes captive portal)
     wifiSetupBlocking();
+
+    // Coming out of AP mode for the first time: build the main UI now.
+    if (!hasWifiSaved) {
+        createUI();
+        lv_timer_handler();
+    }
 
     // Kick off NTP sync so event log timestamps show wall clock time.
     // UTC, no DST. Three NTP servers for redundancy. Sync runs in
