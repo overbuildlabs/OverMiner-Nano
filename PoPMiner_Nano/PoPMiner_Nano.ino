@@ -60,7 +60,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.2.5"
+#define FW_VERSION         "0.2.6"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"
@@ -1433,6 +1433,13 @@ void wifiSetupBlocking() {
     wm.setSaveParamsCallback(onSaveParams);
     wm.setConfigPortalTimeout(0);   // No timeout - wait forever for user
     wm.setConnectTimeout(20);
+
+    // Captive-portal handling: WiFiManager hijacks DNS so any HTTP request
+    // hitting the AP gets redirected to the setup page, AND it serves the
+    // platform-specific probe URLs that iOS/Android/Windows/macOS use to
+    // detect captive portals (so the OS auto-pops a sign-in browser).
+    // This is the default but we set it explicitly so the intent is visible.
+    wm.setCaptivePortalEnable(true);
 
     // Brand the captive portal: PoPMiner title, PoP color theme, only the
     // menu items that make sense for a miner setup flow.
