@@ -22,8 +22,11 @@ input[type=text],input[type=password]{background:#070B1E !important;color:#fff !
 input:focus{outline:none !important;border-color:#49D9D3 !important}
 button,input[type=submit]{background:#49D9D3 !important;color:#070B1E !important;border:0 !important;padding:11px 16px !important;border-radius:6px !important;font-weight:700 !important;cursor:pointer !important;margin:6px 0 !important;font-size:14px;letter-spacing:.5px;width:100%}
 .msg{background:#070B1E !important;color:#9CA3AF !important;border:1px solid #1A1F3A !important;border-radius:4px;padding:8px;font-size:13px}
-.q{color:#6B7280 !important}
+.q{color:#9CA3AF !important}
 .l{color:#EAB308 !important}
+/* WiFiManager renders the signal-strength bars and lock icon as dark SVG
+   sprites via .q::before. Invert them so they're visible on dark navy. */
+.q::before,.q.l::before{filter:invert(1) brightness(1.15) !important}
 hr{border:0;border-top:1px solid #1A1F3A}
 small,em{color:#6B7280}
 a{color:#49D9D3;text-decoration:none}
