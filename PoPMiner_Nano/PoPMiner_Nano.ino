@@ -60,7 +60,7 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.2.0"
+#define FW_VERSION         "0.2.1"
 #define AP_NAME            "PoPMinerNano"
 #define AP_PASSWORD        "kaspa123"
 #define DEFAULT_POOL       "pool.proofofprints.com:5558"
@@ -1362,6 +1362,13 @@ void wifiSetupBlocking() {
     wm.setSaveParamsCallback(onSaveParams);
     wm.setConfigPortalTimeout(0);   // No timeout - wait forever for user
     wm.setConnectTimeout(20);
+
+    // Brand the captive portal: PoPMiner title, PoP color theme, only the
+    // menu items that make sense for a miner setup flow.
+    wm.setTitle("PoPMiner Nano");
+    wm.setCustomHeadElement(POPMINER_WM_HEAD);
+    std::vector<const char *> menu = {"wifi", "info", "sep", "erase", "exit"};
+    wm.setMenu(menu);
 
     setStatus("Connect phone to AP", COLOR_YELLOW);
     Serial.printf("[WM] AP: %s  pwd: %s\n", AP_NAME, AP_PASSWORD);

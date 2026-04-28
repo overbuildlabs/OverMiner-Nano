@@ -4,6 +4,57 @@
 
 #pragma once
 
+// ----- WiFiManager captive portal theming -----
+// Injected into every page WiFiManager serves while the device is in AP-setup
+// mode. CSS recolors the default theme to match the rest of PoPMiner Nano
+// (deep navy + turquoise outlines), and the JS rewrites the hardcoded button
+// labels ("Configure WiFi" -> "Configure Device", "Erase" -> "Factory Reset",
+// etc) so the captive portal feels branded instead of off-the-shelf.
+static const char POPMINER_WM_HEAD[] PROGMEM = R"(
+<style>
+body{background:#070B1E !important;color:#fff !important;font-family:system-ui,-apple-system,sans-serif !important;margin:0;padding:16px}
+.c,div{color:#fff}
+.c{background:#1A1F3A !important;border:1px solid #49D9D3 !important;border-radius:8px !important;padding:18px !important;max-width:380px !important;margin:20px auto !important}
+h1,h2,h3{color:#49D9D3 !important;letter-spacing:.5px;margin:8px 0}
+h1{font-size:22px}
+h3{font-size:14px;text-transform:uppercase;color:#9CA3AF !important}
+input[type=text],input[type=password]{background:#070B1E !important;color:#fff !important;border:1px solid #1A1F3A !important;padding:10px !important;border-radius:4px !important;width:100% !important;box-sizing:border-box !important;margin:4px 0 !important;font-family:ui-monospace,monospace;font-size:13px}
+input:focus{outline:none !important;border-color:#49D9D3 !important}
+button,input[type=submit]{background:#49D9D3 !important;color:#070B1E !important;border:0 !important;padding:11px 16px !important;border-radius:6px !important;font-weight:700 !important;cursor:pointer !important;margin:6px 0 !important;font-size:14px;letter-spacing:.5px;width:100%}
+.msg{background:#070B1E !important;color:#9CA3AF !important;border:1px solid #1A1F3A !important;border-radius:4px;padding:8px;font-size:13px}
+.q{color:#6B7280 !important}
+.l{color:#EAB308 !important}
+hr{border:0;border-top:1px solid #1A1F3A}
+small,em{color:#6B7280}
+a{color:#49D9D3;text-decoration:none}
+form{margin:0}
+label{color:#9CA3AF;font-size:12px;text-transform:uppercase;letter-spacing:1px;display:block;margin:10px 0 4px}
+</style>
+<script>
+function ppRebrand(){
+  var labelMap={
+    'Configure WiFi':'Configure Device',
+    'Configure WiFi (No Scan)':'Manual Configure',
+    'Info':'Device Info',
+    'Setup':'Mining Setup',
+    'Erase':'Factory Reset',
+    'Restart':'Reboot',
+    'Exit':'Done',
+    'Update':'Update Firmware'
+  };
+  document.querySelectorAll('button,input[type=submit]').forEach(function(b){
+    var t=(b.textContent||b.value||'').trim();
+    if(labelMap[t]){
+      if(b.textContent)b.textContent=labelMap[t];
+      if(b.value)b.value=labelMap[t];
+    }
+  });
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',ppRebrand);
+else ppRebrand();
+</script>
+)";
+
 // ----- Login page -----
 // Submitted with x-www-form-urlencoded password field. The .ino sets the
 // authToken cookie on success. ?err=1 in the URL flips the error message on.
