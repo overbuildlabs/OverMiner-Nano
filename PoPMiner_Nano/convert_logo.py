@@ -13,8 +13,13 @@ Output format per pixel (3 bytes):
 from PIL import Image
 import sys, os
 
-INPUT  = r"L:\PoPManager\src-tauri\icons\32x32.png"
-OUTPUT = r"L:\PoPMiner\PoPMiner_Nano\pop_logo.c"
+# Paths are relative to this script so it runs from any checkout.
+# The 32x32 PNG is rendered from docs/brand/overminer-mark.svg (the
+# OverMiners product mark). NAME stays "pop_logo" so the sketch's
+# LV_IMG_DECLARE(pop_logo) keeps working unchanged.
+HERE   = os.path.dirname(os.path.abspath(__file__))
+INPUT  = os.path.join(HERE, "overminer_logo_32.png")
+OUTPUT = os.path.join(HERE, "pop_logo.c")
 NAME   = "pop_logo"
 
 # Match TFT_SWAP_RB in PoPMiner_Nano.ino - if the panel has BGR-swapped
