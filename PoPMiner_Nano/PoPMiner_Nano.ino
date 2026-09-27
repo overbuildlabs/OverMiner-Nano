@@ -1,11 +1,11 @@
 /**
  * ============================================================================
- * PoPMiner Nano - Kaspa Lottery Miner for ESP32 Cheap Yellow Display (CYD)
+ * OverMiner Nano - Kaspa Lottery Miner for ESP32 Cheap Yellow Display (CYD)
  * ============================================================================
  *
  * Hardware: ESP32-2432S028R (ESP32-WROOM-32, 2.8" 240x320 ILI9341, XPT2046 touch)
  *
- * Mining core ported from KASDeck (Proof of Prints).
+ * Mining core ported from KASDeck (OverBuild Labs, formerly Proof of Prints).
  *
  * ============================================================================
  * BUILD NOTES (Arduino IDE)
@@ -27,7 +27,7 @@
  *   - ArduinoJson v6.21.x       (NOT v7 - uses DynamicJsonDocument API)
  *
  * First-boot flow:
- *   1. Device starts AP "PoPMinerNano" (pwd: kaspa123)
+ *   1. Device starts AP "OverMinerNano" (pwd: kaspa123)
  *   2. Connect with phone -> captive portal
  *   3. Enter WiFi creds + Kaspa wallet + pool URL + worker name
  *   4. Save -> device reboots, connects to WiFi + pool
@@ -60,11 +60,15 @@
 #include <XPT2046_Touchscreen.h>
 
 // ==================== CONFIGURATION ====================
-#define FW_VERSION         "0.2.0"
-#define AP_NAME            "PoPMinerNano"
+#define FW_VERSION         "0.3.0"
+#define AP_NAME            "OverMinerNano"
 #define AP_PASSWORD        "kaspa123"
-#define DEFAULT_POOL       "pool.proofofprints.com:5558"
-#define DEFAULT_WORKER     "PoPMinerNano"
+// The pool moved from pool.proofofprints.com to pool.overbuildlabs.com on the
+// same ports. loadConfig() rewrites a saved legacy host once (see below).
+#define POOL_HOST          "pool.overbuildlabs.com"
+#define LEGACY_POOL_HOST   "pool.proofofprints.com"
+#define DEFAULT_POOL       POOL_HOST ":5558"
+#define DEFAULT_WORKER     "OverMinerNano"
 
 // Landscape: 320 wide x 240 tall (USB on left)
 #define SCREEN_W 320
@@ -107,7 +111,7 @@ uint16_t TOUCH_X_MAX = 3800;
 uint16_t TOUCH_Y_MIN = 200;
 uint16_t TOUCH_Y_MAX = 3700;
 
-// ==================== COLORS (proofofprints.com palette) ====================
+// ==================== COLORS (original Proof of Prints screen palette) ====================
 // Each color is wrapped in _RB() so that on R/B-swapped panels the bytes are
 // pre-swapped at compile time. Source still reads with correct hex values.
 #define COLOR_BG          _RB(0x000000)  // pure black
@@ -855,7 +859,7 @@ void my_touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data) {
 // ============================================================================
 
 // Build a card with its own value color and a turquoise outline (matches
-// the proofofprints.com card style with subtle glowing border).
+// the original Proof of Prints card style with subtle glowing border).
 static lv_obj_t* makeCard(lv_obj_t *parent, int x, int y, int w, int h,
                           const char *labelText, uint32_t valueColor,
                           lv_obj_t **valueLabelOut) {
@@ -916,14 +920,14 @@ void createUI() {
     lv_obj_set_style_pad_all(hdr, 0, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    // PoP logo (top-left, 32x32 from pop_logo.c)
+    // OverMiners logo (top-left, 32x32 from pop_logo.c)
     lv_obj_t *logoImg = lv_img_create(hdr);
     lv_img_set_src(logoImg, &pop_logo);
     lv_obj_align(logoImg, LV_ALIGN_LEFT_MID, 2, 0);
 
     // Title (centered between logo and gear)
     uiTitleLabel = lv_label_create(hdr);
-    lv_label_set_text(uiTitleLabel, "PoPMiner Nano");
+    lv_label_set_text(uiTitleLabel, "OverMiner Nano");
     lv_obj_set_style_text_color(uiTitleLabel, lv_color_hex(COLOR_TURQUOISE), 0);
     lv_obj_set_style_text_font(uiTitleLabel, &lv_font_montserrat_20, 0);
     lv_obj_align(uiTitleLabel, LV_ALIGN_CENTER, 0, 0);
@@ -1013,7 +1017,7 @@ void updateUI() {
     }
     if (uiHashrateLabel) lv_label_set_text(uiHashrateLabel, buf);
 
-    // SHARES card: accepted/submitted (compact "9/12" form like PoPMobile)
+    // SHARES card: accepted/submitted (compact "9/12" form like OverMobile)
     if (sharesRejected > 0) {
         snprintf(buf, sizeof(buf), "%u/%ur", (unsigned)sharesAccepted, (unsigned)sharesRejected);
     } else {
@@ -1042,7 +1046,7 @@ void updateUI() {
     }
     if (uiHashesLabel) lv_label_set_text(uiHashesLabel, buf);
 
-    // Mine button - PoPMobile coral when mining, turquoise when idle
+    // Mine button - OverMobile coral when mining, turquoise when idle
     if (uiMineBtnLabel) {
         if (miningEnabled) {
             lv_label_set_text(uiMineBtnLabel, LV_SYMBOL_PAUSE "  STOP MINING");
@@ -1286,9 +1290,26 @@ void loadConfig() {
     String n = prefs.getString("worker", DEFAULT_WORKER);
     prefs.end();
 
+    // Devices set up before the rename saved pool.proofofprints.com. Swap
+    // that host for pool.overbuildlabs.com, keep the port, and persist it
+    // so this happens once. Any other pool the user chose is left alone.
+    String pl = p;
+    pl.toLowerCase();
+    int legacyAt = pl.indexOf(LEGACY_POOL_HOST);
+    bool poolMigrated = legacyAt >= 0;
+    if (poolMigrated) {
+        p = p.substring(0, legacyAt) + POOL_HOST +
+            p.substring(legacyAt + strlen(LEGACY_POOL_HOST));
+    }
+
     strncpy(cfgWallet, w.c_str(), sizeof(cfgWallet) - 1); cfgWallet[sizeof(cfgWallet)-1] = '\0';
     strncpy(cfgPool,   p.c_str(), sizeof(cfgPool)   - 1); cfgPool[sizeof(cfgPool)-1]     = '\0';
     strncpy(cfgWorker, n.c_str(), sizeof(cfgWorker) - 1); cfgWorker[sizeof(cfgWorker)-1] = '\0';
+
+    if (poolMigrated) {
+        Serial.printf("[CFG] Pool host migrated to %s\n", POOL_HOST);
+        saveConfig();
+    }
 
     Serial.printf("[CFG] wallet len=%d pool=%s worker=%s\n",
                   (int)strlen(cfgWallet), cfgPool, cfgWorker);
@@ -1535,12 +1556,12 @@ static void handleRoot() {
     webServer.send_P(200, "text/html", WEB_UI_HTML);
 }
 
-// Device identity for PoPManager discovery (separate from /api/stats so the
+// Device identity for OverManager discovery (separate from /api/stats so the
 // info-pull is cheap to refresh and the stats-pull stays focused on metrics).
 static void handleApiInfo() {
     StaticJsonDocument<384> doc;
     doc["fw"]      = FW_VERSION;
-    doc["name"]    = "PoPMiner Nano";
+    doc["name"]    = "OverMiner Nano";
     doc["model"]   = "esp32-cyd";
     doc["host"]    = mdnsHostname;
     doc["mac"]     = WiFi.macAddress();
@@ -1607,7 +1628,7 @@ static void handleApiConfigPost() {
     if (poolCheck.startsWith("stratum+tcp://")) poolCheck = poolCheck.substring(14);
     int colonAt = poolCheck.indexOf(':');
     if (poolCheck.length() < 5 || colonAt < 1 || colonAt == (int)poolCheck.length() - 1) {
-        reject("Pool URL must be host:port (e.g. pool.proofofprints.com:5558)");
+        reject("Pool URL must be host:port (e.g. pool.overbuildlabs.com:5558)");
         return;
     }
     int portVal = poolCheck.substring(colonAt + 1).toInt();
@@ -1796,8 +1817,8 @@ void setupWebServer() {
     webServer.on("/login",               HTTP_GET,  handleLoginGet);
     webServer.on("/login",               HTTP_POST, handleLoginPost);
     webServer.on("/logout",              HTTP_POST, handleLogoutPost);
-    webServer.on("/api/info",            HTTP_GET,  handleApiInfo);   // public for PoPManager
-    webServer.on("/api/stats",           HTTP_GET,  handleApiStats);  // public for PoPManager
+    webServer.on("/api/info",            HTTP_GET,  handleApiInfo);   // public for OverManager
+    webServer.on("/api/stats",           HTTP_GET,  handleApiStats);  // public for OverManager
 
     // Protected endpoints (handler does the gating)
     webServer.on("/",                    HTTP_GET,  handleRoot);
@@ -1828,7 +1849,7 @@ void setupWebServer() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.printf("\n=== PoPMiner Nano %s ===\n", FW_VERSION);
+    Serial.printf("\n=== OverMiner Nano %s ===\n", FW_VERSION);
 
     miningStateMutex = xSemaphoreCreateMutex();
     logMutex = xSemaphoreCreateMutex();
@@ -1881,8 +1902,8 @@ void setup() {
     // background; addLog() falls back to uptime until first sync lands.
     configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
 
-    // mDNS - unique hostname per device so multiple PoPMiner Nanos can
-    // coexist on one LAN. Also publishes _popminer._tcp so PoPManager
+    // mDNS - unique hostname per device so multiple OverMiner Nanos can
+    // coexist on one LAN. Also publishes _popminer._tcp so OverManager
     // (or any mDNS scanner) can discover all devices in one query.
     {
         uint64_t mac = ESP.getEfuseMac();
@@ -1894,7 +1915,7 @@ void setup() {
         MDNS.addService("popminer", "tcp", 80);
         MDNS.addServiceTxt("popminer", "tcp", "fw", FW_VERSION);
         MDNS.addServiceTxt("popminer", "tcp", "model", "esp32-cyd");
-        MDNS.addServiceTxt("popminer", "tcp", "name", "PoPMiner Nano");
+        MDNS.addServiceTxt("popminer", "tcp", "name", "OverMiner Nano");
         MDNS.addServiceTxt("popminer", "tcp", "host", (const char*)mdnsHostname);
         Serial.printf("[mDNS] %s.local registered, _popminer._tcp announced\n",
                       mdnsHostname);

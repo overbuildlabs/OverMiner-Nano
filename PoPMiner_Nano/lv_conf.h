@@ -1,5 +1,5 @@
 /**
- * lv_conf.h - LVGL v8.3.x configuration for PoPMiner Nano
+ * lv_conf.h - LVGL v8.3.x configuration for OverMiner Nano
  *
  * Place in the sketch folder (next to PoPMiner_Nano.ino).
  * Picked up via #define LV_CONF_INCLUDE_SIMPLE in the sketch.
